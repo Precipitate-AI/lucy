@@ -1,0 +1,7 @@
+python-dotenv
+pinecone
+google-generativeai
+requests
+Flask
+# Optional: Gunicorn for production deployment with Flask, Vercel might handle this
+# gunicorn

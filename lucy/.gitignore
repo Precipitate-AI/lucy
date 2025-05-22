@@ -1,0 +1,91 @@
+# === Dependencies ===
+# Node / JS
+/node_modules
+/.pnp
+.pnp.js
+
+# Python virtual environments
+# Covers .venv, venv, myenv, etc. at any level
+**/.venv/
+**/venv/
+**/activate_this.py
+**/*.Python
+**/pyvenv.cfg
+**/pip-selfcheck.json
+
+# === Build & Distribution Artifacts ===
+# General
+/build/
+/dist/
+*.egg-info/
+
+# Next.js specific
+/.next/
+/out/
+
+# === Log Files ===
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# === Environment Variables (CRITICAL - DO NOT COMMIT SECRETS) ===
+# General .env files (should be project-specific or in Vercel/hosting provider)
+.env
+.env.*
+*.env
+*.env.local
+*.env.*.local
+
+# Allow an example file to be committed (best practice)
+!.env.example
+!*.env.example
+
+# Specific to your structure (these might be redundant if covered above, but explicit is good)
+scripts/.env
+app/.env # IMPORTANT new addition for your Flask app
+
+# === Python Cache & Compiled Files ===
+__pycache__/
+*.py[cod]
+*$py.class
+.Python # Another common name for venv directory
+
+# Specific to your structure (redundant if __pycache__/ is global, but for clarity)
+scripts/__pycache__/
+app/__pycache__/
+
+# Model cache (if any, from scripts)
+scripts/.model_cache/
+
+# === OS Generated Files ===
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Icon? # Custom icon files on macOS
+
+# Windows
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# === Editor & IDE Specific ===
+.vscode/
+.idea/
+*.swp # Vim swap files
+*~ # Backup files
+
+# === Test & Coverage Reports ===
+coverage/
+.coverage
+.pytest_cache/
+htmlcov/
+pytestdebug.log
+
+# === Other ===
+# Add any other project-specific files/folders that shouldn't be committed
+# For example, if you had a `tmp/` folder or `data_exports/`
+
