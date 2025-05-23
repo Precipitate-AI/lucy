@@ -2,8 +2,7 @@
 import { list, del as deleteBlob } from '@vercel/blob'; // del is an alias for delete
 import { Pinecone } from '@pinecone-database/pinecone';
 import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
-import { getServerSession } from "next-auth/next";
-import { authOptions } from "../auth/[...nextauth]";
+
 
 // --- Env Vars (copy relevant from above) ---
 const {
