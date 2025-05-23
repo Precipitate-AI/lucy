@@ -1,18 +1,24 @@
 {
+    "version": 2,
     "builds": [
+        {
+            "src": "package.json",  
+            "use": "@vercel/next"
+        },
         {
             "src": "app/app.py",
             "use": "@vercel/python",
-            "config": { "maxLambdaSize": "50mb" }
+            "config": {
+                "maxLambdaSize": "50mb", 
+                "runtime": "python3.11" 
+            }
         }
-
     ],
     "routes": [
- 
+
         {
-            "src": "/api/(.*)",
+            "src": "/api/python-ask",
             "dest": "app/app.py"
         }
-    
     ]
 }
