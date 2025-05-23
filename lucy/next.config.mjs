@@ -2,28 +2,28 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  webpack: (config, { isServer, webpack }) => { // Added webpack to destructuring for DefinePlugin if needed
-    // Fixes npm packages that depend on `fs` module for client-side bundles
+  webpack: (config, { isServer, webpack }) => {
+    // Fixes npm packages that depend on Node.js core modules for client-side bundles
     if (!isServer) {
       config.resolve.fallback = {
-        ...config.resolve.fallback, // Spread existing fallbacks
-        fs: false, // Tells Webpack to return an empty module for 'fs'
-        // You might need to add other Node.js core modules here if they cause issues
-        // net: false,
-        // tls: false,
-        // child_process: false,
-        // 'mongodb-client-encryption': false, // Example if another lib caused issues
-        // 'aws4': false, // Example
+        ...config.resolve.fallback, 
+        fs: false,
+        stream: false, // Add stream
+        path: false,   // Add path (often comes up with fs/stream)
+        os: false,     // Add os (another common one)
+        crypto: false, // Add crypto (can also be an issue)
+        // You can add more core modules here as needed if other errors pop up
+        // e.g., 'http': false, 'https': false, 'zlib': false, 'url': false, 'util': false, 'assert': false,
       };
     }
 
-    // Optional: If you ever face "process is not defined" issues for client-side code with some libs
-    // config.plugins.push(
-    //   new webpack.DefinePlugin({
-    //     'process.env': JSON.stringify(process.env), // Provide process.env to client-side
-    //   })
-    // );
-
+    // It's generally good practice to ensure experiments.topLevelAwait is enabled if you use it
+    // (Next.js usually handles this, but explicitly stating it can sometimes help with newer features)
+    config.experiments = {
+      ...config.experiments,
+      topLevelAwait: true,
+    };
+    
     return config;
   },
 };
