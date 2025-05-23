@@ -169,24 +169,37 @@ export default async function handler(req, res) {
     }
     console.log(`JS Webhook: From ${fromNumber} (${profileName || 'N/A'}) to ${twilioSystemNumber}, Msg: "${incomingMsg}"`);
 
-    // --- Twilio Signature Validation ---
-    const twilioSignature = req.headers['x-twilio-signature'];
-    let webhookUrlForValidation;
-
-    if (VERCEL_URL) { // Provided by Vercel system
-        webhookUrlForValidation = `https://${VERCEL_URL}${req.url}`;
-    } else if (process.env.NEXT_PUBLIC_SITE_URL) { // User-defined fallback (e.g., for local ngrok if needed)
-        let siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
-        if (siteUrl.endsWith('/') && req.url.startsWith('/')) {
-            siteUrl = siteUrl.slice(0, -1);
+        // --- Twilio Signature Validation ---
+        const twilioSignature = req.headers['x-twilio-signature'];
+        let webhookUrlForValidation;
+        const protocol = req.headers['x-forwarded-proto'] || 'https'; // Vercel uses HTTPS, good default
+    
+        // Determine if running on Vercel (production or preview)
+        const isVercelEnvironment = process.env.NODE_ENV === 'production' || VERCEL_URL;
+    
+        if (isVercelEnvironment) {
+            // On Vercel, the request might come through a different host (e.g., custom domain or simpler alias like lucy-tan.vercel.app)
+            // than what VERCEL_URL (specific deployment URL like lucy-epdc67uv9-...) indicates.
+            // The req.headers.host should reflect the URL Twilio is actually POSTing to.
+            console.log("JS Webhook: Vercel environment detected. Using req.headers.host for URL construction.");
+            webhookUrlForValidation = `${protocol}://${req.headers.host}${req.url}`;
+        } else {
+            // Local development (e.g., ngrok or local server)
+            console.log("JS Webhook: Local/Non-Vercel environment detected. Using local URL construction logic.");
+            if (process.env.NEXT_PUBLIC_SITE_URL) {
+                // Use this if you're using ngrok and have NEXT_PUBLIC_SITE_URL set to your ngrok https URL
+                let siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+                if (siteUrl.endsWith('/') && req.url.startsWith('/')) {
+                    siteUrl = siteUrl.slice(0, -1);
+                }
+                webhookUrlForValidation = `${siteUrl}${req.url}`;
+            } else {
+                // Fallback for local dev if NEXT_PUBLIC_SITE_URL isn't set for ngrok, use host header
+                webhookUrlForValidation = `${protocol}://${req.headers.host}${req.url}`;
+            }
         }
-        webhookUrlForValidation = `${siteUrl}${req.url}`; // Assuming NEXT_PUBLIC_SITE_URL includes https://
-    } else { // Absolute fallback using host header (common for local dev without ngrok specific setup)
-        const protocol = req.headers['x-forwarded-proto'] || 'http'; // Prefer x-forwarded-proto if behind a proxy
-        webhookUrlForValidation = `${protocol}://${req.headers.host}${req.url}`;
-    }
-
-    const params = req.body; // Next.js parsed body object for validation
+    
+        const params = req.body; // Next.js parsed body object for validation
 
     console.log("JS Webhook: ---- Signature Validation Data ----");
     console.log("JS Webhook: TWILIO_AUTH_TOKEN (is set):", !!TWILIO_AUTH_TOKEN);
