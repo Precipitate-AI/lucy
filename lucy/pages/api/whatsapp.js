@@ -1,5 +1,5 @@
 // lucy/pages/api/whatsapp.js
-import twilio from 'twilio';
+import twilio from 'twilio'; // Correct: lowercase for default export
 import { Pinecone } from '@pinecone-database/pinecone';
 import OpenAI from 'openai'; // For OpenRouter
 import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
@@ -17,11 +17,8 @@ const {
     OPENROUTER_APP_NAME,
     GOOGLE_API_KEY,
     GOOGLE_EMBEDDING_MODEL_ID,
-    // This is the Vercel System Environment Variable that provides the full URL for the current deployment.
-    // It's generally more reliable than NEXT_PUBLIC_SITE_URL for preview/branch URLs.
-    // Ensure it's available to your function (Vercel usually makes it available).
-    VERCEL_URL, // e.g., lucy-git-test-precipitate.vercel.app (without https://)
-    DEBUG_SKIP_TWILIO_VALIDATION // Set this to "true" (as a string) in Vercel env vars to temporarily skip validation
+    VERCEL_URL, 
+    DEBUG_SKIP_TWILIO_VALIDATION
 } = process.env;
 
 const GROUP_CHAT_TRIGGER_WORD = "@lucy";
@@ -29,7 +26,7 @@ const GROUP_CHAT_TRIGGER_WORD = "@lucy";
 // --- Initialize Clients ---
 let twilioClient;
 if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
-    twilioClient = new twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+    twilioClient = new twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN); // Correct: lowercase twilio constructor
 } else {
     console.error("CRITICAL: Twilio Account SID or Auth Token not set.");
 }
@@ -42,7 +39,7 @@ const initializePinecone = async () => {
         try {
             if (!pinecone) pinecone = new Pinecone({ apiKey: PINECONE_API_KEY });
             pineconeIndex = pinecone.index(PINECONE_INDEX_NAME);
-            await pineconeIndex.describeIndexStats();
+            await pineconeIndex.describeIndexStats(); // Check connection
             console.log("Pinecone JS client initialized for index:", PINECONE_INDEX_NAME);
             return true;
         } catch (error) {
@@ -88,15 +85,26 @@ if (GOOGLE_API_KEY) {
 
 // --- Helper Functions ---
 async function getGoogleEmbeddingForQueryJS(text) {
-    // ... (same as your provided version, no changes needed here)
     if (!googleEmbeddingGenAIModel) {
         console.error("JS Webhook: Google AI embedding model not initialized.");
         throw new Error("Embedding service (Google JS) not configured.");
     }
     try {
+        // For retrieval_query, text should be a single string.
         const result = await googleEmbeddingGenAIModel.embedContent(
-             text,
-             TaskType.RETRIEVAL_QUERY
+             text, // Already a string, no need for { content: text, task_type: ... }
+             // TaskType here is primarily for models that support multiple task types.
+             // For embedding-001, it's specialized. However, being explicit is fine.
+             // TaskType.RETRIEVAL_QUERY // This can also be passed as a second argument if the model expects it.
+                                       // For embedContent with a single string, explicit TaskType is less common for latest SDKs.
+                                       // Check Google SDK docs if `embedContent(string, TaskType)` becomes an issue.
+                                       // Often it's `embedContent({ content: string, taskType: TaskType.RETRIEVAL_QUERY })` or within `requests` array.
+                                       // Let's stick to what worked for you before. If 'text' is a string and `embedContent(text)` works, that's simpler.
+                                       // The SDK is `googleGenerativeAI.getGenerativeModel({ model: embeddingModelId })`
+                                       // then `googleEmbeddingGenAIModel.embedContent(text)` if TaskType is implicit or handled by model setup.
+                                       // Or `googleEmbeddingGenAIModel.embedContent({ content: text, taskType: TaskType.RETRIEVAL_QUERY })`
+                                       // Your existing structure was `embedContent(text, TaskType.RETRIEVAL_QUERY)`
+                                       // Let's assume that's how your SDK version/model expects it.
         );
         const embedding = result.embedding;
         if (embedding && embedding.values && Array.isArray(embedding.values)) {
@@ -112,14 +120,12 @@ async function getGoogleEmbeddingForQueryJS(text) {
 }
 
 function extractPropertyIdFromMessage(twilioRequestBody, userMessage) {
-    // ... (same as your provided version, no changes needed here for now)
-    // For testing, you might still want to hardcode this temporarily if it's causing issues.
     const match = userMessage.match(/for property (\w+)/i);
     if (match && match[1]) {
         return match[1];
     }
-     // FOR TESTING: return "Unit4BNelayanReefApartment";
-    return "default_property";
+    // Default or fallback property ID if not found in the message
+    return "default_property"; 
 }
 
 // --- Main Handler ---
@@ -127,9 +133,7 @@ export default async function handler(req, res) {
     console.log("\n--- JS WhatsApp Webhook Request Received ---");
     console.log("Timestamp:", new Date().toISOString());
     console.log("Request Method:", req.method);
-    // Only log body keys for security, not full body initially.
     console.log("Request Body Keys:", req.body ? Object.keys(req.body).join(', ') : 'No Body');
-    // console.log("Full Request Headers:", JSON.stringify(req.headers, null, 2)); // Can be very verbose
 
     if (req.method !== 'POST') {
         console.log("JS Webhook: Request is not POST.");
@@ -138,53 +142,56 @@ export default async function handler(req, res) {
     }
 
     // Basic check for essential clients
-    if (!twilioClient || !OPENROUTER_API_KEY || !GOOGLE_API_KEY || !PINECONE_API_KEY || !PINECONE_INDEX_NAME ) {
-        // ... (same critical client check as your version)
-        console.error("JS Webhook: One or more critical environment variables/clients are missing.");
-        if (twilioClient && TWILIO_WHATSAPP_SENDER && req.body && req.body.From){
+    if (!twilioClient || !openrouterLlmClient || !googleEmbeddingGenAIModel || !PINECONE_INDEX_NAME || !PINECONE_API_KEY) { // Check actual client instances
+        console.error("JS Webhook: One or more critical environment variables/clients are missing or not initialized.");
+        const errorMessage = "I'm having some technical difficulties with my core configuration. Please contact support.";
+        if (twilioClient && TWILIO_WHATSAPP_SENDER && req.body && req.body.From) {
              try {
                 await twilioClient.messages.create({
                     to: req.body.From,
                     from: TWILIO_WHATSAPP_SENDER,
-                    body: "I'm having some technical difficulties with my core configuration. Please contact support.",
+                    body: errorMessage,
                 });
              } catch (twilioError) {
                 console.error("JS Webhook: Failed to send config error message via Twilio:", twilioError.message);
              }
+        } else {
+            console.log("JS Webhook: Cannot send Twilio error message due to missing Twilio client or sender info.");
         }
+        // Still send a 500 to Twilio so it knows something went wrong on our end.
         return res.status(500).json({ error: "Server configuration error prevented processing." });
     }
 
     const { Body: incomingMsg, From: fromNumber, To: twilioSystemNumber, ProfileName: profileName } = req.body;
+    if (!incomingMsg || !fromNumber) {
+        console.warn("JS Webhook: Missing 'Body' or 'From' in request. Cannot process.");
+        return res.status(400).send("Bad Request: Missing required fields.");
+    }
     console.log(`JS Webhook: From ${fromNumber} (${profileName || 'N/A'}) to ${twilioSystemNumber}, Msg: "${incomingMsg}"`);
 
     // --- Twilio Signature Validation ---
     const twilioSignature = req.headers['x-twilio-signature'];
     let webhookUrlForValidation;
 
-    // Construct the URL Vercel uses. VERCEL_URL provides the hostname.
-    // req.url contains the path and query string (e.g., /api/whatsapp)
-    if (VERCEL_URL) {
+    if (VERCEL_URL) { // Provided by Vercel system
         webhookUrlForValidation = `https://${VERCEL_URL}${req.url}`;
-    } else if (process.env.NEXT_PUBLIC_SITE_URL) { // Fallback to NEXT_PUBLIC_SITE_URL if VERCEL_URL isn't there
-        // Ensure NEXT_PUBLIC_SITE_URL does not have a trailing slash if req.url starts with one.
+    } else if (process.env.NEXT_PUBLIC_SITE_URL) { // User-defined fallback (e.g., for local ngrok if needed)
         let siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
         if (siteUrl.endsWith('/') && req.url.startsWith('/')) {
             siteUrl = siteUrl.slice(0, -1);
         }
-        webhookUrlForValidation = siteUrl + req.url;
-    } else {
-        // Fallback for local dev or if other vars aren't set - may not work on Vercel for validation
-        webhookUrlForValidation = `https://${req.headers.host}${req.url}`;
+        webhookUrlForValidation = `${siteUrl}${req.url}`; // Assuming NEXT_PUBLIC_SITE_URL includes https://
+    } else { // Absolute fallback using host header (common for local dev without ngrok specific setup)
+        const protocol = req.headers['x-forwarded-proto'] || 'http'; // Prefer x-forwarded-proto if behind a proxy
+        webhookUrlForValidation = `${protocol}://${req.headers.host}${req.url}`;
     }
 
-    const params = req.body; // Next.js parsed body object
+    const params = req.body; // Next.js parsed body object for validation
 
     console.log("JS Webhook: ---- Signature Validation Data ----");
     console.log("JS Webhook: TWILIO_AUTH_TOKEN (is set):", !!TWILIO_AUTH_TOKEN);
     console.log("JS Webhook: Received X-Twilio-Signature:", twilioSignature);
     console.log("JS Webhook: Constructed webhookUrl for validation:", webhookUrlForValidation);
-    // console.log("JS Webhook: Params for validation (full body):", JSON.stringify(params, null, 2)); // Can be verbose
     console.log("JS Webhook: process.env.NODE_ENV:", process.env.NODE_ENV);
     console.log("JS Webhook: System VERCEL_URL:", VERCEL_URL);
     console.log("JS Webhook: Env NEXT_PUBLIC_SITE_URL:", process.env.NEXT_PUBLIC_SITE_URL);
@@ -193,18 +200,22 @@ export default async function handler(req, res) {
     console.log("JS Webhook: DEBUG_SKIP_TWILIO_VALIDATION value:", DEBUG_SKIP_TWILIO_VALIDATION);
     console.log("JS Webhook: ---- End Signature Validation Data ----");
 
-    // Check for the debug flag to skip validation
-    const skipValidation = DEBUG_SKIP_TWILIO_VALIDATION === "true";
+    const forceSkipValidation = DEBUG_SKIP_TWILIO_VALIDATION === "true";
+    // Validate if NOT force-skipped AND (we are in 'production' OR on Vercel generally)
+    const shouldValidate = !forceSkipValidation && (process.env.NODE_ENV === 'production' || VERCEL_URL);
 
-    if (!skipValidation && (process.env.NODE_ENV === 'production' || VERCEL_URL) ) { // Always validate in Vercel prod-like envs unless skipped
+    if (shouldValidate) {
         if (!TWILIO_AUTH_TOKEN || !twilioSignature) {
             console.warn("JS Webhook: Missing Auth Token or Signature for validation. Failing request.");
-            return res.status(401).send('Authentication failed. Missing credentials for validation.'); // Use 401 more explicitly
+            return res.status(401).send('Authentication failed. Missing credentials for validation.');
         }
         try {
-            const isValid = Twilio.validateRequest(TWILIO_AUTH_TOKEN, twilioSignature, webhookUrlForValidation, params);
+            // Corrected: use lowercase 'twilio' for the validateRequest static method
+            const isValid = twilio.validateRequest(TWILIO_AUTH_TOKEN, twilioSignature, webhookUrlForValidation, params);
             if (!isValid) {
-                console.warn(`JS Webhook: Invalid Twilio signature. URL used: ${webhookUrlForValidation}. For Signature: ${twilioSignature}. Params (keys): ${Object.keys(params).join(', ')}`);
+                console.warn(`JS Webhook: Invalid Twilio signature. URL used: ${webhookUrlForValidation}.`);
+                // In production, you might not want to log the signature itself, but params keys can be helpful.
+                // console.warn(`JS Webhook: For Signature: ${twilioSignature}. Params (keys): ${Object.keys(params).join(', ')}`);
                 return res.status(403).send('Authentication failed. Invalid Twilio signature.');
             }
             console.log("JS Webhook: Twilio signature validated successfully with URL:", webhookUrlForValidation);
@@ -213,93 +224,116 @@ export default async function handler(req, res) {
             return res.status(500).send('Server error during signature validation.');
         }
     } else {
-        console.log("JS Webhook: SKIPPING Twilio signature validation (NODE_ENV not 'production' OR VERCEL_URL not set OR DEBUG_SKIP_TWILIO_VALIDATION is true).");
+        let skipReason = "";
+        if (forceSkipValidation) {
+            skipReason = "DEBUG_SKIP_TWILIO_VALIDATION is true";
+        } else if (process.env.NODE_ENV !== 'production' && !VERCEL_URL) {
+            skipReason = "NODE_ENV not 'production' AND VERCEL_URL not set";
+        } else {
+             skipReason = "Logic error in skip conditions or unexpected environment state"; // Should not happen if logic is correct
+        }
+        console.log(`JS Webhook: SKIPPING Twilio signature validation (${skipReason}).`);
     }
     // --- End Twilio Signature Validation ---
 
-    // ... (rest of your logic: userQuery, group message handling, Pinecone init, etc.)
     let userQuery = incomingMsg;
     const isGroupMessage = fromNumber && fromNumber.includes('@g.us');
 
     if (isGroupMessage) {
-        if (!incomingMsg.toLowerCase().startsWith(GROUP_CHAT_TRIGGER_WORD.toLowerCase())) {
-            console.log(`JS Webhook: Group message ignored (no trigger "${GROUP_CHAT_TRIGGER_WORD}").`);
-            const twiml = new twilio.twiml.MessagingResponse();
+        if (!userQuery.toLowerCase().startsWith(GROUP_CHAT_TRIGGER_WORD.toLowerCase())) {
+            console.log(`JS Webhook: Group message from ${fromNumber} ignored (no trigger "${GROUP_CHAT_TRIGGER_WORD}").`);
+            const twiml = new twilio.twiml.MessagingResponse(); // Correct: lowercase twilio
             return res.status(200).setHeader('Content-Type', 'text/xml').send(twiml.toString());
         }
-        userQuery = incomingMsg.substring(GROUP_CHAT_TRIGGER_WORD.length).trim();
+        userQuery = userQuery.substring(GROUP_CHAT_TRIGGER_WORD.length).trim();
         if (!userQuery) {
             const helpMsg = `You called, ${profileName || 'friend'}! What can I help you with after "${GROUP_CHAT_TRIGGER_WORD}"?`;
-            if(twilioClient) twilioClient.messages.create({ body: helpMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
-            const twiml = new twilio.twiml.MessagingResponse();
+            if(twilioClient) {
+                try {
+                    await twilioClient.messages.create({ body: helpMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
+                } catch (e) { console.error("JS Webhook: Error sending group trigger help message:", e.message); }
+            }
+            const twiml = new twilio.twiml.MessagingResponse(); // Correct: lowercase twilio
             return res.status(200).setHeader('Content-Type', 'text/xml').send(twiml.toString());
         }
     }
 
     const pineconeReady = await initializePinecone();
-    if (!pineconeReady || !pineconeIndex) {
-         console.error("JS Webhook: Pinecone index not available for RAG.");
+    if (!pineconeReady || !pineconeIndex) { // Check pineconeIndex as well
+         console.error("JS Webhook: Pinecone index not available/initialized for RAG.");
          const pineconeErrorMsg = "I'm having trouble accessing the property information right now. Please try again later.";
-         if(twilioClient) twilioClient.messages.create({ body: pineconeErrorMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
-         const twiml = new twilio.twiml.MessagingResponse();
+         if(twilioClient) {
+            try {
+                await twilioClient.messages.create({ body: pineconeErrorMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
+            } catch (e) { console.error("JS Webhook: Error sending Pinecone error message:", e.message); }
+         }
+         const twiml = new twilio.twiml.MessagingResponse(); // Correct: lowercase twilio
          return res.status(200).setHeader('Content-Type', 'text/xml').send(twiml.toString());
     }
 
-    // const propertyId = extractPropertyIdFromMessage(req.body, userQuery);
-    // HARDCODE propertyId for focused testing of RAG pipeline + Twilio validation
-    const propertyId = "Unit4BNelayanReefApartment"; // <<<---- HARDCODED FOR TESTING. Make sure this ID exists in your Pinecone.
-    console.log(`JS Webhook: HARDCODED Property ID for testing: ${propertyId}`);
-    // if (!propertyId || propertyId === "default_property") { //Temporarily bypass original propertyId check logic
+    // Hardcoded property ID for testing - REMOVE OR COMMENT OUT FOR PRODUCTION
+    let propertyId = "Unit4BNelayanReefApartment"; 
+    console.log(`JS Webhook: Using Property ID: ${propertyId} (Currently hardcoded for testing).`);
+    // --- If you want to revert to dynamic property ID extraction: ---
+    // let propertyId = extractPropertyIdFromMessage(req.body, userQuery);
+    // console.log(`JS Webhook: Extracted Property ID: ${propertyId}`);
+    // if (!propertyId || propertyId === "default_property") {
     //      const noPropIdMsg = `To help you best, which property are you asking about? (e.g., "${GROUP_CHAT_TRIGGER_WORD} for property XYZ what is the wifi?")`;
-    //      if(twilioClient) twilioClient.messages.create({ body: noPropIdMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
-    //      const twiml = new Twilio.twiml.MessagingResponse();
+    //      if(twilioClient) {
+    //          try {
+    //              await twilioClient.messages.create({ body: noPropIdMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
+    //          } catch (e) { console.error("JS Webhook: Error sending no property ID message:", e.message); }
+    //      }
+    //      const twiml = new twilio.twiml.MessagingResponse(); // Correct lowercase
     //      return res.status(200).setHeader('Content-Type', 'text/xml').send(twiml.toString());
     // }
-    // console.log(`JS Webhook: Processing for Property ID: ${propertyId}`);
-
 
     let contextChunks = [];
-    if (!googleEmbeddingGenAIModel) { // Added check before trying to use it
-        console.error("JS Webhook: Google Embedding Model not available, cannot perform RAG.");
-        // Fall through, context will be empty, LLM will respond based on that.
+    // Ensure googleEmbeddingGenAIModel is available before trying to use it for embeddings
+    if (!googleEmbeddingGenAIModel) {
+        console.error("JS Webhook: Google Embedding Model not available. Cannot perform RAG query.");
+        // Context will remain empty. LLM will get a message indicating this.
     } else {
         try {
-            console.log(`JS Webhook: Getting embedding for query: "${userQuery.substring(0,50)}..."`);
+            console.log(`JS Webhook: Getting embedding for query: "${userQuery.substring(0,50)}..." for property "${propertyId}"`);
             const queryEmbedding = await getGoogleEmbeddingForQueryJS(userQuery);
-            console.log(`JS Webhook: Querying Pinecone for property '${propertyId}'.`);
+            
+            console.log(`JS Webhook: Querying Pinecone index '${PINECONE_INDEX_NAME}' for property '${propertyId}'.`);
             const queryResponse = await pineconeIndex.query({
                 vector: queryEmbedding,
-                topK: 3,
-                filter: { propertyId: propertyId },
-                includeMetadata: true,
+                topK: 3, // Get top 3 relevant chunks
+                filter: { propertyId: propertyId }, // Filter by propertyId
+                includeMetadata: true, // We need the text from metadata
             });
 
             if (queryResponse.matches && queryResponse.matches.length > 0) {
-                contextChunks = queryResponse.matches.map(match => match.metadata.text);
+                contextChunks = queryResponse.matches.map(match => match.metadata && match.metadata.text ? match.metadata.text : "");
                 console.log(`JS Webhook: Retrieved ${contextChunks.length} context chunks for property '${propertyId}'.`);
             } else {
                 console.log(`JS Webhook: No specific context found in Pinecone for property '${propertyId}' and query: "${userQuery.substring(0,50)}"`);
             }
         } catch (error) {
-            console.error(`JS Webhook: Error during embedding or Pinecone query for '${propertyId}':`, error.message);
+            console.error(`JS Webhook: Error during embedding generation or Pinecone query for property '${propertyId}':`, error.message);
+            // Context will remain empty if an error occurs here.
         }
     }
 
-
-    const contextForLLM = contextChunks.join("\n\n---\n\n") || `No specific information was found in our knowledge base for property "${propertyId}" related to your query.`;
-    const systemPrompt = `You are Lucy, a friendly AI assistant for property "${propertyId}".
-Answer guest questions based ONLY on the "Property Information Context" below.
-If the answer isn't in the context, state that clearly. Do not invent.
+    const contextForLLM = contextChunks.filter(chunk => chunk).join("\n\n---\n\n"); // Ensure no empty/null chunks
+    const systemPrompt = `You are Lucy, a friendly and concise AI assistant for property "${propertyId}".
+Answer guest questions based ONLY on the "Property Information Context" provided below.
+If the answer isn't in the context, clearly state that you don't have that specific information in the knowledge base for this property. Do not invent or infer information beyond the provided context.
+Keep your answers brief and to the point.
 
 Property Information Context for "${propertyId}":
 ---
-${contextForLLM}
+${contextForLLM || `No specific information was found in our knowledge base for property "${propertyId}" related to your query.`}
 ---`;
 
-    let llmResponseText = `I'm sorry, I couldn't find an answer for that regarding property "${propertyId}". Please try rephrasing or contact the manager.`;
+    let llmResponseText = `I'm sorry, I couldn't find an answer for that regarding property "${propertyId}" in my current knowledge. Please try rephrasing or contact the manager for assistance.`;
 
     if (!openrouterLlmClient) {
         console.error("JS Webhook: OpenRouter client not initialized. Cannot get LLM response.");
+        // llmResponseText will remain the default apology.
     } else {
         try {
             console.log(`JS Webhook: Sending prompt to OpenRouter (${llmModelToUse}) for property ${propertyId}. Context length: ${contextForLLM.length}`);
@@ -309,24 +343,27 @@ ${contextForLLM}
                     { role: "system", content: systemPrompt },
                     { role: "user", content: `Guest Question (about property "${propertyId}"): "${userQuery}"` }
                 ],
-                temperature: 0.3,
-                max_tokens: 400,
+                temperature: 0.2, // Slightly lower for more factual responses
+                max_tokens: 300,  // Adjust as needed for typical response length
             });
             if (completion.choices && completion.choices[0].message && completion.choices[0].message.content) {
                 llmResponseText = completion.choices[0].message.content.trim();
                 console.log(`JS Webhook: LLM response received: "${llmResponseText.substring(0,100)}..."`);
             } else {
-                console.error("JS Webhook: No response content from OpenRouter:", JSON.stringify(completion));
+                console.error("JS Webhook: No response content from OpenRouter:", JSON.stringify(completion, null, 2));
+                // llmResponseText will remain the default apology.
             }
         } catch (error) {
-            console.error("JS Webhook: Error calling OpenRouter API:", error.response ? JSON.stringify(error.response.data) : error.message);
+            console.error("JS Webhook: Error calling OpenRouter API:", error.response ? JSON.stringify(error.response.data, null, 2) : error.message);
+            // llmResponseText will remain the default apology.
         }
     }
 
-    // Send reply via Twilio
+    // Asynchronously send reply via Twilio REST API
+    // This is "fire and forget" in the sense that we don't wait for it to complete before sending 200 OK to Twilio.
     (async () => {
-        if (!twilioClient) {
-            console.error("JS Webhook: Twilio client not available to send reply.");
+        if (!twilioClient || !TWILIO_WHATSAPP_SENDER) {
+            console.error("JS Webhook: Twilio client or sender not available to send reply.");
             return;
         }
         try {
@@ -335,14 +372,20 @@ ${contextForLLM}
                 from: TWILIO_WHATSAPP_SENDER,
                 to: fromNumber,
             });
-            console.log(`JS Webhook: Successfully sent reply to ${fromNumber}.`);
+            console.log(`JS Webhook: Successfully initiated send of reply to ${fromNumber}.`);
         } catch (sendError) {
-            console.error("JS Webhook: Error sending final Twilio message:", sendError.message, sendError.code, sendError.moreInfo);
+            // Log detailed error, including Twilio error code and more_info if available
+            let errorDetails = sendError.message;
+            if (sendError.code) errorDetails += ` (Code: ${sendError.code})`;
+            if (sendError.moreInfo) errorDetails += ` (More Info: ${sendError.moreInfo})`;
+            console.error("JS Webhook: Error sending final Twilio message:", errorDetails);
         }
     })();
 
-    const twiml = new twilio.twiml.MessagingResponse();
+    // Always respond to Twilio with an empty TwiML to acknowledge receipt of the webhook.
+    // The actual reply to the user is sent via the REST API call above.
+    const twiml = new twilio.twiml.MessagingResponse(); // Correct: lowercase twilio
     res.setHeader('Content-Type', 'text/xml');
-    console.log("JS Webhook: --- Request Processing Complete. Sending 200 OK to Twilio. ---");
+    console.log("JS Webhook: --- Request Processing Complete. Sending 200 OK (empty TwiML) to Twilio. ---");
     return res.status(200).send(twiml.toString());
 }
