@@ -3,27 +3,44 @@
 const nextConfig = {
   reactStrictMode: true,
   webpack: (config, { isServer, webpack }) => {
-    // Fixes npm packages that depend on Node.js core modules for client-side bundles
+    // Log to see if this webpack function is even being called on Vercel
+    console.log(">>> Applying custom webpack config. isServer:", isServer);
+
     if (!isServer) {
+      console.log(">>> Applying client-side fallbacks.");
       config.resolve.fallback = {
-        ...config.resolve.fallback, 
+        ...config.resolve.fallback,
         fs: false,
-        stream: false, // Add stream
-        path: false,   // Add path (often comes up with fs/stream)
-        os: false,     // Add os (another common one)
-        crypto: false, // Add crypto (can also be an issue)
-        // You can add more core modules here as needed if other errors pop up
-        // e.g., 'http': false, 'https': false, 'zlib': false, 'url': false, 'util': false, 'assert': false,
+        stream: false,
+        'node:stream': false, // Explicitly try to false out the 'node:stream' import
+        path: false,
+        'node:path': false,   // And other 'node:' prefixed modules
+        os: false,
+        'node:os': false,
+        crypto: false,
+        'node:crypto': false,
+        // Add more if other "node:" prefixed errors appear
       };
+
+      // Alternative way to ignore modules, sometimes more effective
+      // This uses webpack.IgnorePlugin
+      // config.plugins.push(
+      //   new webpack.IgnorePlugin({ resourceRegExp: /^node:/ }) // Ignores all 'node:' prefixed modules
+      // );
+      // OR more specifically:
+      // config.plugins.push(
+      //   new webpack.IgnorePlugin({ resourceRegExp: /^fs$|^stream$|^path$|^os$|^crypto$/ })
+      // );
+
+
+      console.log(">>> Client fallbacks applied:", JSON.stringify(config.resolve.fallback));
     }
 
-    // It's generally good practice to ensure experiments.topLevelAwait is enabled if you use it
-    // (Next.js usually handles this, but explicitly stating it can sometimes help with newer features)
     config.experiments = {
       ...config.experiments,
       topLevelAwait: true,
     };
-    
+
     return config;
   },
 };
