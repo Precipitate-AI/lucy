@@ -57,7 +57,7 @@ if (process.env.OPENROUTER_API_KEY) {
 } else {
     console.error("OPENROUTER_API_KEY not set. LLM calls will fail.");
 }
-const openRouterGeminiModel = process.env.OPENROUTER_GEMINI_MODEL || "google/gemini-1.5-pro-latest";
+const openRouterGeminiModel = process.env.OPENROUTER_MODEL_NAME || "google/gemini-2.5-pro-preview";
 
 
 // Google AI (for Embeddings)

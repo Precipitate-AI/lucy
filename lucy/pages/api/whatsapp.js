@@ -1,5 +1,5 @@
 // lucy/pages/api/whatsapp.js
-import { Twilio } from 'twilio';
+import twilio from 'twilio';
 import { Pinecone } from '@pinecone-database/pinecone';
 import OpenAI from 'openai'; // For OpenRouter
 import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
@@ -12,7 +12,7 @@ const {
     PINECONE_API_KEY,
     PINECONE_INDEX_NAME,
     OPENROUTER_API_KEY,
-    OPENROUTER_GEMINI_MODEL,
+    OPENROUTER_MODEL_NAME,
     OPENROUTER_SITE_URL,
     OPENROUTER_APP_NAME,
     GOOGLE_API_KEY,
@@ -29,7 +29,7 @@ const GROUP_CHAT_TRIGGER_WORD = "@lucy";
 // --- Initialize Clients ---
 let twilioClient;
 if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
-    twilioClient = new Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+    twilioClient = new twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 } else {
     console.error("CRITICAL: Twilio Account SID or Auth Token not set.");
 }
@@ -68,7 +68,7 @@ if (OPENROUTER_API_KEY) {
 } else {
     console.error("CRITICAL: OPENROUTER_API_KEY not set for JS webhook.");
 }
-const llmModelToUse = OPENROUTER_GEMINI_MODEL || "google/gemini-pro";
+const llmModelToUse = OPENROUTER_MODEL_NAME || "google/gemini-2.5-pro-preview";
 
 let googleGenAI;
 let googleEmbeddingGenAIModel;
@@ -224,14 +224,14 @@ export default async function handler(req, res) {
     if (isGroupMessage) {
         if (!incomingMsg.toLowerCase().startsWith(GROUP_CHAT_TRIGGER_WORD.toLowerCase())) {
             console.log(`JS Webhook: Group message ignored (no trigger "${GROUP_CHAT_TRIGGER_WORD}").`);
-            const twiml = new Twilio.twiml.MessagingResponse();
+            const twiml = new twilio.twiml.MessagingResponse();
             return res.status(200).setHeader('Content-Type', 'text/xml').send(twiml.toString());
         }
         userQuery = incomingMsg.substring(GROUP_CHAT_TRIGGER_WORD.length).trim();
         if (!userQuery) {
             const helpMsg = `You called, ${profileName || 'friend'}! What can I help you with after "${GROUP_CHAT_TRIGGER_WORD}"?`;
             if(twilioClient) twilioClient.messages.create({ body: helpMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
-            const twiml = new Twilio.twiml.MessagingResponse();
+            const twiml = new twilio.twiml.MessagingResponse();
             return res.status(200).setHeader('Content-Type', 'text/xml').send(twiml.toString());
         }
     }
@@ -241,7 +241,7 @@ export default async function handler(req, res) {
          console.error("JS Webhook: Pinecone index not available for RAG.");
          const pineconeErrorMsg = "I'm having trouble accessing the property information right now. Please try again later.";
          if(twilioClient) twilioClient.messages.create({ body: pineconeErrorMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
-         const twiml = new Twilio.twiml.MessagingResponse();
+         const twiml = new twilio.twiml.MessagingResponse();
          return res.status(200).setHeader('Content-Type', 'text/xml').send(twiml.toString());
     }
 
@@ -341,7 +341,7 @@ ${contextForLLM}
         }
     })();
 
-    const twiml = new Twilio.twiml.MessagingResponse();
+    const twiml = new twilio.twiml.MessagingResponse();
     res.setHeader('Content-Type', 'text/xml');
     console.log("JS Webhook: --- Request Processing Complete. Sending 200 OK to Twilio. ---");
     return res.status(200).send(twiml.toString());
