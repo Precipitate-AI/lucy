@@ -1,224 +1,163 @@
-// pages/index.js
-import Head from 'next/head';
 import { useState, useEffect, useRef } from 'react';
+import Head from 'next/head';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
-// Simple CSS for chat bubbles
-const styles = `
-  .page-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 20px;
-    font-family: Arial, sans-serif;
-    min-height: 100vh;
-  }
-  .admin-link {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    padding: 8px 12px;
-    background-color: #f0f0f0;
-    border: 1px solid #ccc;
-    border-radius: 5px;
-    text-decoration: none;
-    color: #333;
-  }
-  .chat-wrapper {
-    width: 100%;
-    max-width: 700px;
-    margin-top: 20px; /* Space for admin link */
-  }
-  .chat-container {
-    border: 1px solid #ccc;
-    border-radius: 8px;
-    display: flex;
-    flex-direction: column;
-    height: 70vh; /* Or adjust as needed */
-    background-color: #f9f9f9;
-  }
-  .messages-list {
-    flex-grow: 1;
-    overflow-y: auto;
-    padding: 10px;
-    display: flex;
-    flex-direction: column;
-  }
-  .message-bubble {
-    padding: 8px 12px;
-    border-radius: 18px;
-    margin-bottom: 8px;
-    max-width: 70%;
-    word-wrap: break-word;
-    line-height: 1.4;
-  }
-  .user-message {
-    background-color: #007bff;
-    color: white;
-    align-self: flex-end;
-  }
-  .bot-message {
-    background-color: #e9e9eb;
-    color: black;
-    align-self: flex-start;
-  }
-  .chat-input-form {
-    display: flex;
-    padding: 10px;
-    border-top: 1px solid #ccc;
-  }
-  .chat-input-form input[type="text"] {
-    flex-grow: 1;
-    padding: 10px;
-    border: 1px solid #ddd;
-    border-radius: 20px;
-    margin-right: 10px;
-  }
-  .chat-input-form button {
-    padding: 10px 15px;
-    background-color: #007bff;
-    color: white;
-    border: none;
-    border-radius: 20px;
-    cursor: pointer;
-  }
-  .chat-input-form button:disabled {
-    background-color: #aaa;
-  }
-  .property-selector-container {
-    margin-bottom: 15px;
-    display: flex;
-    align-items: center;
-  }
-  .property-selector-container label {
-    margin-right: 10px;
-  }
-  .property-selector {
-    padding: 10px;
-    border-radius: 5px;
-    border: 1px solid #ccc;
-  }
-  .loading-indicator {
-    align-self: flex-start;
-    color: #777;
-    font-style: italic;
-    padding: 8px 12px;
-  }
-`;
-
-export default function ChatPage() {
+export default function Home() {
+  const [query, setQuery] = useState('');
   const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPropertyId, setCurrentPropertyId] = useState('Unit4BNelayanReefApartment');
-  const messagesEndRef = useRef(null);
+  const [propertyId, setPropertyId] = useState('Unit4BNelayanReefApartment'); // Default or from selection
+  const [isBotTyping, setIsBotTyping] = useState(false); // For typing indicator
 
-  const availableProperties = [
-    { id: 'Unit4BNelayanReefApartment', name: 'Nelayan Reef Apt Unit 4B' },
-    { id: 'VillaSunrise', name: 'Villa Sunrise' },
-    { id: 'CityLoft101', name: 'City Loft 101' },
-    // Add more properties as they are known/managed
-  ];
+  const messagesEndRef = useRef(null); // For auto-scrolling
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  useEffect(scrollToBottom, [messages]);
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, isBotTyping]); // Scroll when messages or typing status changes
 
-  const handleSendMessage = async (e) => {
+  const handleInputChange = (e) => {
+    setQuery(e.target.value);
+  };
+
+  const handlePropertyChange = (e) => {
+    setPropertyId(e.target.value);
+    setMessages([]); // Clear messages when property changes
+    setQuery(''); // Clear query input
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    if (!query.trim()) return;
 
-    const newUserMessage = { sender: 'user', text: input };
-    const currentMessages = [...messages, newUserMessage];
-    setMessages(currentMessages);
-    setInput('');
+    const userMessage = { sender: 'user', text: query };
+    // Note: 'messages' state used in fetch body below will be the state *before* this userMessage is added due to async nature of setState.
+    // This is generally correct if chatHistory should be turns *prior* to the current one.
+    setMessages(prevMessages => [...prevMessages, userMessage]);
+    
+    const currentQuery = query; // Store query as it will be cleared
+    setQuery('');
+    setIsBotTyping(true); // Bot starts "typing"
     setIsLoading(true);
 
     try {
-      // Send last N messages as history (e.g., last 5 pairs / 10 messages) for context
-      const historyForAPI = currentMessages.slice(-10).map(m => ({ sender: m.sender, text: m.text }));
-
-
-      const res = await fetch('/api/chat', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: input, propertyId: currentPropertyId, chatHistory: historyForAPI.slice(0, -1) }), // Don't send current query in history
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query: currentQuery, propertyId, chatHistory: messages.slice(-6) }), // Send currentQuery, propertyId, and last 6 messages as history
       });
 
-      // Remove temporary "thinking..." message if you added one
-      // setMessages(prev => prev.filter(msg => msg.sender !== 'bot-loading'));
+      setIsBotTyping(false); // Bot stops "typing"
 
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.error || 'Failed to get response');
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
 
-      const data = await res.json();
-      setMessages(prev => [...prev, { sender: 'bot', text: data.response }]);
+      const data = await response.json();
+      const botMessage = { sender: 'bot', text: data.response };
+      setMessages(prevMessages => [...prevMessages, botMessage]);
+
     } catch (error) {
-      console.error("Chat error:", error);
-      setMessages(prev => [...prev, { sender: 'bot', text: `Error: ${error.message}` }]);
+      console.error("Error fetching chat response:", error);
+      const errorMessage = { sender: 'bot', text: `Sorry, I encountered an error: ${error.message}` };
+      setMessages(prevMessages => [...prevMessages, errorMessage]);
+      setIsBotTyping(false);
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="page-container">
+    <>
       <Head>
-        <title>Lucy Chat Test</title>
-        <meta name="description" content="Test Lucy Bot Responses" />
+        <title>Lucy - Your AI Assistant</title>
+        <meta name="description" content="AI Assistant for your property" />
         <link rel="icon" href="/favicon.ico" />
-        <style>{styles}</style>
       </Head>
 
-      <a href="/admin" className="admin-link">Admin Panel</a>
-
-      <h1>Lucy Chat Tester</h1>
-      
-      <div className="chat-wrapper">
-        <div className="property-selector-container">
-          <label htmlFor="property-select">Select Property: </label>
-          <select
-            id="property-select"
-            className="property-selector"
-            value={currentPropertyId}
-            onChange={(e) => {
-                setCurrentPropertyId(e.target.value);
-                setMessages([]); // Clear messages when property changes
-            }}
-          >
-            {availableProperties.map(prop => (
-              <option key={prop.id} value={prop.id}>{prop.name} ({prop.id})</option>
-            ))}
-          </select>
-        </div>
-        
-        <div className="chat-container">
-          <div className="messages-list">
-            {messages.map((msg, index) => (
-              <div key={index} className={`message-bubble ${msg.sender === 'user' ? 'user-message' : 'bot-message'}`}>
-                {msg.text}
-              </div>
-            ))}
-            {isLoading && <div className="loading-indicator message-bubble bot-message">Lucy is thinking...</div>}
-            <div ref={messagesEndRef} />
+      <div className="flex flex-col h-screen bg-gray-100">
+        {/* Header */}
+        <header className="bg-indigo-600 text-white p-4 shadow-md">
+          <h1 className="text-2xl font-semibold text-center">Lucy AI Assistant</h1>
+          <div className="mt-2 text-center">
+            <label htmlFor="propertySelect" className="mr-2 text-sm">Property:</label>
+            <select
+              id="propertySelect"
+              value={propertyId}
+              onChange={handlePropertyChange}
+              className="p-1 rounded text-gray-800 text-sm bg-indigo-100 border-indigo-300 focus:ring-indigo-500 focus:border-indigo-500"
+            >
+              <option value="Unit4BNelayanReefApartment">Unit4B Nelayan Reef (Bali)</option>
+              <option value="MyDubaiProperty">My Dubai Penthouse (Dubai)</option>
+              <option value="CityLoft101">CityLoft 101 (Generic)</option>
+              {/* Add more properties here */}
+            </select>
           </div>
-          <form onSubmit={handleSendMessage} className="chat-input-form">
+        </header>
+
+        {/* Chat Messages Area */}
+        <main className="flex-grow p-4 overflow-y-auto space-y-2 bg-white shadow-inner">
+          {messages.map((msg, index) => (
+            <div
+              key={index}
+              className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+            >
+              <div
+                className={`max-w-xl lg:max-w-2xl px-4 py-2 rounded-2xl shadow-md ${
+                  msg.sender === 'user'
+                    ? 'bg-indigo-500 text-white rounded-br-none'
+                    : 'bg-gray-200 text-gray-800 rounded-bl-none prose prose-sm max-w-none' // MODIFIED: Added prose classes for bot
+                }`}
+              >
+                {msg.sender === 'bot' ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}> 
+                    {/* MODIFIED: Removed className from ReactMarkdown */}
+                    {msg.text}
+                  </ReactMarkdown>
+                ) : (
+                  msg.text // User messages usually don't have markdown applied from user input
+                )}
+              </div>
+            </div>
+          ))}
+          {isBotTyping && (
+            <div className="flex justify-start">
+                <div className="px-4 py-2 rounded-2xl shadow-md bg-gray-200 text-gray-600 rounded-bl-none italic">
+                    Lucy is typing...
+                </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} /> {/* Anchor for scrolling */}
+        </main>
+
+        {/* Input Area */}
+        <footer className="bg-gray-50 p-3 border-t border-gray-300 shadow-md">
+          <form onSubmit={handleSubmit} className="flex items-center space-x-2">
             <input
               type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={`Chat about ${availableProperties.find(p=>p.id === currentPropertyId)?.name || 'selected property'}...`}
+              value={query}
+              onChange={handleInputChange}
+              placeholder="Ask Lucy anything..."
+              className="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-shadow"
               disabled={isLoading}
             />
-            <button type="submit" disabled={isLoading}>
-              {isLoading ? '...' : 'Send'}
+            <button
+              type="submit"
+              className="px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 transition-colors"
+              disabled={isLoading}
+            >
+              {isLoading ? 'Sending...' : 'Send'}
             </button>
           </form>
-        </div>
+        </footer>
       </div>
-    </div>
+    </>
   );
 }
