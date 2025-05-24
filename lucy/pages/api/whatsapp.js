@@ -1,10 +1,9 @@
-// lucy/pages/api/whatsapp.js
 import twilio from 'twilio';
 import { Pinecone } from '@pinecone-database/pinecone';
 import OpenAI from 'openai';
 import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
 
-// --- Environment Variables ---
+// --- Environment Variables (same) ---
 const {
     TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN,
@@ -23,15 +22,14 @@ const {
 
 const GROUP_CHAT_TRIGGER_WORD = "@lucy";
 
-// --- Initialize Clients ---
+// --- Initialize Clients (same) ---
 let twilioClient;
 if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
     twilioClient = new twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 } else {
-    console.error("CRITICAL: Twilio Account SID or Auth Token not set.");
+    console.error("WhatsApp API: CRITICAL: Twilio Account SID or Auth Token not set.");
 }
 
-// ... (Pinecone, OpenRouter, Google AI client initializations remain the same) ...
 let pinecone;
 let pineconeIndex;
 const initializePinecone = async () => {
@@ -41,14 +39,14 @@ const initializePinecone = async () => {
             if (!pinecone) pinecone = new Pinecone({ apiKey: PINECONE_API_KEY });
             pineconeIndex = pinecone.index(PINECONE_INDEX_NAME);
             await pineconeIndex.describeIndexStats();
-            console.log("Pinecone JS client initialized for index:", PINECONE_INDEX_NAME);
+            console.log("WhatsApp API: Pinecone JS client initialized for index:", PINECONE_INDEX_NAME);
             return true;
         } catch (error) {
-            console.error("Pinecone JS client initialization error:", error);
+            console.error("WhatsApp API: Pinecone JS client initialization error:", error);
             pineconeIndex = null; return false;
         }
     } else {
-        console.error("CRITICAL: Pinecone API Key or Index Name missing for JS webhook.");
+        console.error("WhatsApp API: CRITICAL: Pinecone API Key or Index Name missing.");
         return false;
     }
 };
@@ -64,9 +62,9 @@ if (OPENROUTER_API_KEY) {
         },
     });
 } else {
-    console.error("CRITICAL: OPENROUTER_API_KEY not set for JS webhook.");
+    console.error("WhatsApp API: CRITICAL: OPENROUTER_API_KEY not set.");
 }
-const llmModelToUse = OPENROUTER_MODEL_NAME || "google/gemini-2.5-pro-preview";
+const llmModelToUse = OPENROUTER_MODEL_NAME || "google/gemini-flash-1.5";
 
 let googleGenAI;
 let googleEmbeddingGenAIModel;
@@ -75,308 +73,305 @@ if (GOOGLE_API_KEY) {
         googleGenAI = new GoogleGenerativeAI(GOOGLE_API_KEY);
         const embeddingModelId = GOOGLE_EMBEDDING_MODEL_ID || "models/embedding-001";
         googleEmbeddingGenAIModel = googleGenAI.getGenerativeModel({ model: embeddingModelId });
-        console.log("Google AI JS client initialized for embeddings model:", embeddingModelId);
+        console.log("WhatsApp API: Google AI JS client initialized for embeddings model:", embeddingModelId);
     } catch (error) {
-        console.error("Error initializing Google AI JS client for embeddings:", error);
+        console.error("WhatsApp API: Error initializing Google AI JS client for embeddings:", error);
         googleEmbeddingGenAIModel = null;
     }
 } else {
-    console.error("CRITICAL: GOOGLE_API_KEY not set for JS webhook.");
+    console.error("WhatsApp API: CRITICAL: GOOGLE_API_KEY not set.");
 }
 
-
-// --- Helper Functions ---
 async function getGoogleEmbeddingForQueryJS(text) {
-    // ... (embedding function remains the same) ...
+    // ... (same as in chat.js)
     if (!googleEmbeddingGenAIModel) {
-        console.error("JS Webhook: Google AI embedding model not initialized.");
+        console.error("WhatsApp API: Google AI embedding model not initialized.");
         throw new Error("Embedding service (Google JS) not configured.");
     }
     try {
-        const result = await googleEmbeddingGenAIModel.embedContent(text);
+        const result = await googleEmbeddingGenAIModel.embedContent({
+            content: { parts: [{ text: text }] },
+            taskType: TaskType.RETRIEVAL_QUERY
+        });
         const embedding = result.embedding;
         if (embedding && embedding.values && Array.isArray(embedding.values)) {
             return embedding.values;
         } else {
-            console.error("JS Webhook: Unexpected embedding format from Google AI:", JSON.stringify(result, null, 2));
+            if (Array.isArray(embedding) && embedding.every(v => typeof v === 'number')) return embedding;
+            console.error("WhatsApp API: Unexpected embedding format from Google AI:", JSON.stringify(result, null, 2));
             throw new Error("Failed to extract embedding values from Google AI JS response.");
         }
     } catch (error) {
-        console.error("JS Webhook: Error getting embedding for query from Google AI:", error.message);
+        console.error("WhatsApp API: Error getting embedding for query from Google AI:", error.message, error.stack);
         throw error;
     }
 }
 
 function extractPropertyIdFromMessage(twilioRequestBody, userMessage) {
-    // ... (extractPropertyIdFromMessage function remains the same) ...
-    const match = userMessage.match(/for property (\w+)/i);
-    if (match && match[1]) {
-        return match[1];
+    // ... (same as before)
+    const lowerMessage = userMessage.toLowerCase();
+    const propertyKeywords = ["property", "unit", "villa", "apt", "apartment", "house", "staying at"];
+    for (const keyword of propertyKeywords) {
+        const regex = new RegExp(`${keyword}\\s+([a-zA-Z0-9_-]+)`, 'i');
+        const match = lowerMessage.match(regex);
+        if (match && match[1]) {
+            console.log(`WhatsApp API: Extracted propertyId '${match[1]}' from message.`);
+            return match[1];
+        }
     }
-    return "default_property";
+    return null;
 }
 
-// --- Retry Logic for Twilio Send ---
-const RETRYABLE_TWILIO_ERROR_CODES = ['ECONNRESET', 'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'EPIPE']; // Add more as needed
-const MAX_SEND_RETRIES = 2; // Try initial send + 2 retries = 3 attempts total
-const INITIAL_RETRY_DELAY_MS = 500; // Start with 500ms delay
+// ... (sendTwilioMessageWithRetry - same as before) ...
+const RETRYABLE_TWILIO_ERROR_CODES = ['ECONNRESET', 'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'EPIPE'];
+const MAX_SEND_RETRIES = 2;
+const INITIAL_RETRY_DELAY_MS = 500;
 
 async function sendTwilioMessageWithRetry(messagePayload, attempt = 1) {
     if (!twilioClient || !TWILIO_WHATSAPP_SENDER) {
-        console.error("JS Webhook (sendTwilioMessageWithRetry): Twilio client or sender not available.");
+        console.error("WhatsApp API (sendTwilioMessageWithRetry): Twilio client or sender not available.");
         return false;
     }
-
     try {
-        console.log(`JS Webhook (sendTwilioMessageWithRetry): Attempt ${attempt} to send message to ${messagePayload.to}.`);
+        console.log(`WhatsApp API (sendTwilioMessageWithRetry): Attempt ${attempt} to send to ${messagePayload.to}.`);
         await twilioClient.messages.create(messagePayload);
-        console.log(`JS Webhook (sendTwilioMessageWithRetry): Successfully sent reply to ${messagePayload.to} on attempt ${attempt}.`);
+        console.log(`WhatsApp API (sendTwilioMessageWithRetry): Sent reply to ${messagePayload.to} on attempt ${attempt}.`);
         return true;
     } catch (sendError) {
         let errorDetails = sendError.message;
         if (sendError.code) errorDetails += ` (Code: ${sendError.code})`;
-
-        console.error(`JS Webhook (sendTwilioMessageWithRetry): Error on attempt ${attempt} for ${messagePayload.to}:`, errorDetails);
+        console.error(`WhatsApp API (sendTwilioMessageWithRetry): Error on attempt ${attempt} for ${messagePayload.to}:`, errorDetails);
         if (sendError.moreInfo) console.error("Twilio More Info:", sendError.moreInfo);
 
-        // Check if error is retryable and we haven't exceeded max retries
         if (RETRYABLE_TWILIO_ERROR_CODES.includes(sendError.code) && attempt <= MAX_SEND_RETRIES) {
-            const delayMs = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt - 1); // Exponential backoff
-            console.warn(`JS Webhook (sendTwilioMessageWithRetry): Retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_SEND_RETRIES + 1})...`);
+            const delayMs = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+            console.warn(`WhatsApp API (sendTwilioMessageWithRetry): Retrying in ${delayMs}ms...`);
             await new Promise(resolve => setTimeout(resolve, delayMs));
             return sendTwilioMessageWithRetry(messagePayload, attempt + 1);
         } else {
-            console.error(`JS Webhook (sendTwilioMessageWithRetry): Failed to send message after ${attempt} attempts or error not retryable.`);
+            console.error(`WhatsApp API (sendTwilioMessageWithRetry): Failed after ${attempt} attempts or error not retryable.`);
             return false;
         }
     }
 }
 
 
-// --- Main Handler ---
 export default async function handler(req, res) {
-    console.log("\n--- JS WhatsApp Webhook Request Received ---");
-    // ... (initial logs and method check remain the same) ...
+    // ... (initial checks, Twilio validation - same as before) ...
+    console.log("\n--- WhatsApp API Request Received ---");
     console.log("Timestamp:", new Date().toISOString());
-    console.log("Request Method:", req.method);
-    console.log("Request Body Keys:", req.body ? Object.keys(req.body).join(', ') : 'No Body');
+    console.log("Method:", req.method);
 
     if (req.method !== 'POST') {
-        console.log("JS Webhook: Request is not POST.");
+        console.log("WhatsApp API: Not POST.");
         res.setHeader('Allow', 'POST');
         return res.status(405).end('Method Not Allowed');
     }
-
-    // Basic check for essential clients
+    
     if (!twilioClient || !openrouterLlmClient || !googleEmbeddingGenAIModel || !PINECONE_INDEX_NAME || !PINECONE_API_KEY) {
-        // ... (client check and error response remain the same) ...
-        console.error("JS Webhook: One or more critical environment variables/clients are missing or not initialized.");
-        const errorMessage = "I'm having some technical difficulties with my core configuration. Please contact support.";
+        console.error("WhatsApp API: CRITICAL: One or more core services not initialized.");
+        const errorMessage = "I'm having some technical difficulties. Please contact support or try again later.";
         if (twilioClient && TWILIO_WHATSAPP_SENDER && req.body && req.body.From) {
-             try {
-                // Use the retry mechanism even for this error message if possible, though it might also fail if Twilio client itself is the issue
-                await sendTwilioMessageWithRetry({
-                    to: req.body.From,
-                    from: TWILIO_WHATSAPP_SENDER,
-                    body: errorMessage,
-                });
-             } catch (twilioError) { /* Already logged by sendTwilioMessageWithRetry */ }
-        } else {
-            console.log("JS Webhook: Cannot send Twilio error message due to missing Twilio client or sender info.");
+             sendTwilioMessageWithRetry({ to: req.body.From, from: TWILIO_WHATSAPP_SENDER, body: errorMessage });
         }
-        return res.status(500).json({ error: "Server configuration error prevented processing." });
+        return res.status(500).json({ error: "Server configuration error." });
     }
 
-    const { Body: incomingMsg, From: fromNumber, To: twilioSystemNumber, ProfileName: profileName } = req.body;
+    const { Body: incomingMsg, From: fromNumber, To: twilioSystemNumber, ProfileName: profileName = "Guest" } = req.body;
     if (!incomingMsg || !fromNumber) {
-        // ... (missing body/from check remains the same) ...
-        console.warn("JS Webhook: Missing 'Body' or 'From' in request. Cannot process.");
+        console.warn("WhatsApp API: Missing 'Body' or 'From'.");
         return res.status(400).send("Bad Request: Missing required fields.");
     }
-    console.log(`JS Webhook: From ${fromNumber} (${profileName || 'N/A'}) to ${twilioSystemNumber}, Msg: "${incomingMsg}"`);
+    console.log(`WhatsApp API: From ${fromNumber} (${profileName}) to ${twilioSystemNumber}, Msg: "${incomingMsg}"`);
 
-    // --- Twilio Signature Validation ---
     const twilioSignature = req.headers['x-twilio-signature'];
     let webhookUrlForValidation;
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const isVercelEnvironment = process.env.NODE_ENV === 'production' || VERCEL_URL;
 
     if (isVercelEnvironment) {
-        console.log("JS Webhook: Vercel environment detected. Using req.headers.host for URL construction.");
         webhookUrlForValidation = `${protocol}://${req.headers.host}${req.url}`;
     } else {
-        console.log("JS Webhook: Local/Non-Vercel environment detected. Using local URL construction logic.");
-        if (process.env.NEXT_PUBLIC_SITE_URL) {
-            let siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
-            if (siteUrl.endsWith('/') && req.url.startsWith('/')) {
-                siteUrl = siteUrl.slice(0, -1);
-            }
-            webhookUrlForValidation = `${siteUrl}${req.url}`;
-        } else {
-            webhookUrlForValidation = `${protocol}://${req.headers.host}${req.url}`;
-        }
+        webhookUrlForValidation = `${process.env.NEXT_PUBLIC_SITE_URL || `${protocol}://${req.headers.host}`}${req.url}`;
     }
     const params = req.body;
-    // ... (signature validation logging and logic remain the same) ...
-    console.log("JS Webhook: ---- Signature Validation Data ----");
-    console.log("JS Webhook: TWILIO_AUTH_TOKEN (is set):", !!TWILIO_AUTH_TOKEN);
-    console.log("JS Webhook: Received X-Twilio-Signature:", twilioSignature);
-    console.log("JS Webhook: Constructed webhookUrl for validation:", webhookUrlForValidation);
-    console.log("JS Webhook: process.env.NODE_ENV:", process.env.NODE_ENV);
-    console.log("JS Webhook: System VERCEL_URL:", VERCEL_URL);
-    console.log("JS Webhook: Env NEXT_PUBLIC_SITE_URL:", process.env.NEXT_PUBLIC_SITE_URL);
-    console.log("JS Webhook: Header req.headers.host:", req.headers.host);
-    console.log("JS Webhook: Path req.url:", req.url);
-    console.log("JS Webhook: DEBUG_SKIP_TWILIO_VALIDATION value:", DEBUG_SKIP_TWILIO_VALIDATION);
-    console.log("JS Webhook: ---- End Signature Validation Data ----");
 
     const forceSkipValidation = DEBUG_SKIP_TWILIO_VALIDATION === "true";
-    const shouldValidate = !forceSkipValidation && isVercelEnvironment; // Simplified: always validate on Vercel unless skipped
+    const shouldValidate = !forceSkipValidation && (isVercelEnvironment || process.env.NEXT_PUBLIC_SITE_URL);
 
     if (shouldValidate) {
         if (!TWILIO_AUTH_TOKEN || !twilioSignature) {
-            console.warn("JS Webhook: Missing Auth Token or Signature for validation. Failing request.");
-            return res.status(401).send('Authentication failed. Missing credentials for validation.');
+            console.warn("WhatsApp API: Missing Auth Token or Signature for validation.");
+            return res.status(401).send('Authentication failed (validation credentials missing).');
         }
         try {
             const isValid = twilio.validateRequest(TWILIO_AUTH_TOKEN, twilioSignature, webhookUrlForValidation, params);
             if (!isValid) {
-                console.warn(`JS Webhook: Invalid Twilio signature. URL used: ${webhookUrlForValidation}.`);
-                return res.status(403).send('Authentication failed. Invalid Twilio signature.');
+                console.warn(`WhatsApp API: Invalid Twilio signature. URL: ${webhookUrlForValidation}.`);
+                return res.status(403).send('Authentication failed (Invalid Twilio signature).');
             }
-            console.log("JS Webhook: Twilio signature validated successfully with URL:", webhookUrlForValidation);
+            console.log("WhatsApp API: Twilio signature validated.");
         } catch (validationError) {
-            console.error("JS Webhook: Error during Twilio.validateRequest execution:", validationError);
+            console.error("WhatsApp API: Error during Twilio.validateRequest:", validationError);
             return res.status(500).send('Server error during signature validation.');
         }
     } else {
-        let skipReason = "";
-        if (forceSkipValidation) {
-            skipReason = "DEBUG_SKIP_TWILIO_VALIDATION is true";
-        } else if (!isVercelEnvironment) { // If not on Vercel and not forced skip
-            skipReason = "Not a Vercel environment (NODE_ENV not 'production' AND VERCEL_URL not set)";
-        } else { // Should not be hit if logic is correct
-             skipReason = "Unexpected skip condition";
-        }
-        console.log(`JS Webhook: SKIPPING Twilio signature validation (${skipReason}).`);
+        console.log(`WhatsApp API: SKIPPING Twilio signature validation.`);
     }
 
-    // ... (Group message handling, Pinecone init, propertyId logic, RAG query, LLM call remain the same) ...
     let userQuery = incomingMsg;
     const isGroupMessage = fromNumber && fromNumber.includes('@g.us');
 
     if (isGroupMessage) {
         if (!userQuery.toLowerCase().startsWith(GROUP_CHAT_TRIGGER_WORD.toLowerCase())) {
-            console.log(`JS Webhook: Group message from ${fromNumber} ignored (no trigger "${GROUP_CHAT_TRIGGER_WORD}").`);
-            const twiml = new twilio.twiml.MessagingResponse();
-            return res.status(200).setHeader('Content-Type', 'text/xml').send(twiml.toString());
+            console.log(`WhatsApp API: Group msg from ${fromNumber} ignored (no trigger).`);
+            return res.status(200).setHeader('Content-Type', 'text/xml').send(new twilio.twiml.MessagingResponse().toString());
         }
         userQuery = userQuery.substring(GROUP_CHAT_TRIGGER_WORD.length).trim();
         if (!userQuery) {
-            const helpMsg = `You called, ${profileName || 'friend'}! What can I help you with after "${GROUP_CHAT_TRIGGER_WORD}"?`;
-            if(twilioClient) { // No need to await this, it's a fire-and-forget response
-                 sendTwilioMessageWithRetry({ body: helpMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
-            }
-            const twiml = new twilio.twiml.MessagingResponse();
-            return res.status(200).setHeader('Content-Type', 'text/xml').send(twiml.toString());
+            const helpMsg = `You called, ${profileName}! What can I help you with after "${GROUP_CHAT_TRIGGER_WORD}"?`;
+            sendTwilioMessageWithRetry({ body: helpMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
+            return res.status(200).setHeader('Content-Type', 'text/xml').send(new twilio.twiml.MessagingResponse().toString());
         }
     }
 
     const pineconeReady = await initializePinecone();
     if (!pineconeReady || !pineconeIndex) {
-         console.error("JS Webhook: Pinecone index not available/initialized for RAG.");
-         const pineconeErrorMsg = "I'm having trouble accessing the property information right now. Please try again later.";
-         if(twilioClient) { // No need to await this
-            sendTwilioMessageWithRetry({ body: pineconeErrorMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
-         }
-         const twiml = new twilio.twiml.MessagingResponse();
-         return res.status(200).setHeader('Content-Type', 'text/xml').send(twiml.toString());
+         console.error("WhatsApp API: Pinecone index not available for RAG.");
+         const pineconeErrorMsg = "I'm having trouble accessing property info. Please try later or contact support.";
+         sendTwilioMessageWithRetry({ body: pineconeErrorMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
+         return res.status(200).setHeader('Content-Type', 'text/xml').send(new twilio.twiml.MessagingResponse().toString());
     }
-
-    let propertyId = "Unit4BNelayanReefApartment";
-    console.log(`JS Webhook: Using Property ID: ${propertyId} (Currently hardcoded for testing).`);
+    
+    let propertyId = extractPropertyIdFromMessage(req.body, userQuery) || "Unit4BNelayanReefApartment";
+    console.log(`WhatsApp API: Using Property ID: ${propertyId} for query.`);
 
     let contextChunks = [];
+    let hasPropertyContextForLLM = false; // Renamed for clarity
+
     if (!googleEmbeddingGenAIModel) {
-        console.error("JS Webhook: Google Embedding Model not available. Cannot perform RAG query.");
+        console.error("WhatsApp API: Google Embedding Model not available. Cannot perform RAG.");
     } else {
         try {
-            console.log(`JS Webhook: Getting embedding for query: "${userQuery.substring(0,50)}..." for property "${propertyId}"`);
+            console.log(`WhatsApp API: Getting embedding for query: "${userQuery.substring(0,50)}..." for P-ID "${propertyId}"`);
             const queryEmbedding = await getGoogleEmbeddingForQueryJS(userQuery);
-            console.log(`JS Webhook: Querying Pinecone index '${PINECONE_INDEX_NAME}' for property '${propertyId}'.`);
+            
+            console.log(`WhatsApp API: Querying Pinecone for P-ID '${propertyId}'.`);
             const queryResponse = await pineconeIndex.query({
                 vector: queryEmbedding,
-                topK: 3,
+                topK: 2, 
                 filter: { propertyId: propertyId },
                 includeMetadata: true,
             });
             if (queryResponse.matches && queryResponse.matches.length > 0) {
-                contextChunks = queryResponse.matches.map(match => match.metadata && match.metadata.text ? match.metadata.text : "");
-                console.log(`JS Webhook: Retrieved ${contextChunks.length} context chunks for property '${propertyId}'.`);
+                contextChunks = queryResponse.matches
+                    .map(match => match.metadata && match.metadata.text ? match.metadata.text.trim() : "")
+                    .filter(Boolean);
+                if (contextChunks.length > 0) {
+                    hasPropertyContextForLLM = true; // If Pinecone returns anything, flag it
+                    console.log(`WhatsApp API: Retrieved ${contextChunks.length} context chunks for P-ID '${propertyId}'.`);
+                } else {
+                    console.log(`WhatsApp API: Pinecone query for P-ID '${propertyId}' had matches but no text.`);
+                }
             } else {
-                console.log(`JS Webhook: No specific context found in Pinecone for property '${propertyId}' and query: "${userQuery.substring(0,50)}"`);
+                console.log(`WhatsApp API: No specific context in Pinecone for P-ID '${propertyId}'.`);
             }
         } catch (error) {
-            console.error(`JS Webhook: Error during embedding generation or Pinecone query for property '${propertyId}':`, error.message);
+            console.error(`WhatsApp API: Error during RAG for P-ID '${propertyId}':`, error.message);
+            contextChunks = [];
+            hasPropertyContextForLLM = false;
         }
     }
 
-    const contextForLLM = contextChunks.filter(chunk => chunk).join("\n\n---\n\n");
-    const systemPrompt = `You are Lucy, a friendly and concise AI assistant for property "${propertyId}".
-Answer guest questions based ONLY on the "Property Information Context" provided below.
-If the answer isn't in the context, clearly state that you don't have that specific information in the knowledge base for this property. Do not invent or infer information beyond the provided context.
-Keep your answers brief and to the point.
+    const contextForLLM = hasPropertyContextForLLM ? contextChunks.join("\n\n---\n\n") : "No specific property information was retrieved for this query.";
+    
+    let cityFromProperty = "the current location";
+    const pidLower = propertyId.toLowerCase();
+    if (pidLower.includes("bali") || pidLower.includes("nelayan") || pidLower.includes("seminyak") || pidLower.includes("ubud") || pidLower.includes("canggu")) {
+        cityFromProperty = "Bali";
+    } else if (pidLower.includes("dubai")) {
+        cityFromProperty = "Dubai";
+    }
+    console.log(`WhatsApp API: Property's city: ${cityFromProperty}. Has RAG context for LLM: ${hasPropertyContextForLLM}`);
 
-Property Information Context for "${propertyId}":
----
-${contextForLLM || `No specific information was found in our knowledge base for property "${propertyId}" related to your query.`}
----`;
+    // Identical system prompt as in chat.js
+    const systemPrompt = `You are Lucy, a multi-skilled AI assistant for guests at property "${propertyId}".
+The guest's current question is: "${userQuery}" (received via WhatsApp)
 
-    let llmResponseText = `I'm sorry, I couldn't find an answer for that regarding property "${propertyId}" in my current knowledge. Please try rephrasing or contact the manager for assistance.`;
+Your primary task is to determine the NATURE of the guest's question and respond accordingly:
+
+TYPE 1: PROPERTY-SPECIFIC QUESTION
+- This is a question directly about property "${propertyId}" (e.g., "wifi password?", "how does the AC work?", "what's the address for ${propertyId}?").
+- IF the question is Type 1:
+    1. You HAVE BEEN PROVIDED with the following "Property Information Context" for "${propertyId}":
+    ---
+    ${contextForLLM}
+    ---
+    (Note: If the context above says "No specific property information was retrieved", it means RAG found nothing relevant from the database for this query for this property.)
+    2. Answer the question ("${userQuery}") USING ONLY information found within this "Property Information Context".
+    3. If the "Property Information Context" (especially if it's not "No specific property information...") DOES NOT contain the answer for "{propertyId}", then state: "I checked the information for property '${propertyId}', but I couldn't find specific details on that particular topic in my current information." DO NOT use your general knowledge for Type 1 questions if the context is missing the answer or says no info was retrieved.
+
+TYPE 2: GENERAL CITY/LOCATION QUESTION
+- This is a question about ${cityFromProperty} (the city where "${propertyId}" is located) or ANOTHER city/location explicitly mentioned in "${userQuery}" (e.g., "things to do in ${cityFromProperty}", "best restaurants in Uluwatu", "how to get to Dubai Mall?").
+- IF the question is Type 2 AND it is NOT successfully answered as a Type 1 question (because context was missing, context said no info retrieved, or context was irrelevant to the question):
+    1. Answer the question ("${userQuery}") using your general knowledge as a helpful city/travel expert.
+    2. When doing so, clearly state that you are providing general information, for example: "Regarding ${cityFromProperty}, generally..." or "As general information for a place like Uluwatu..."
+
+TYPE 3: OTHER GENERAL KNOWLEDGE QUESTION
+- This is a question not fitting Type 1 or Type 2 (e.g., "what's the capital of France?").
+- IF the question is Type 3:
+    1. Answer using your general knowledge.
+
+IF YOU CANNOT ANSWER or are unsure after considering these types:
+- State: "I'm sorry, I don't have information on that topic right now."
+
+CRITICAL:
+- Prioritize answering as Type 1 if the question seems property-specific and the provided context (if any) helps.
+- If Type 1 fails due to lack of specific context in the retrieved info, then consider Type 2.
+- For WhatsApp, keep answers very brief and to the point. Use short sentences.
+- Do not make up answers.`;
+
+
+    let llmResponseText = `I'm sorry, I couldn't find an answer for that regarding property "${propertyId}". Please try rephrasing or contact support.`;
 
     if (!openrouterLlmClient) {
-        console.error("JS Webhook: OpenRouter client not initialized. Cannot get LLM response.");
+        console.error("WhatsApp API: OpenRouter client not initialized.");
+        llmResponseText = "My AI connection is down for this property. Contact support.";
     } else {
         try {
-            console.log(`JS Webhook: Sending prompt to OpenRouter (${llmModelToUse}) for property ${propertyId}. Context length: ${contextForLLM.length}`);
+            console.log(`WhatsApp API: Sending final prompt to OpenRouter (${llmModelToUse}) for P-ID ${propertyId}. System prompt length: ${systemPrompt.length}`);
+            // console.log("DEBUG: WhatsApp API Final System Prompt:\n", systemPrompt);
+            
             const completion = await openrouterLlmClient.chat.completions.create({
                 model: llmModelToUse,
                 messages: [
                     { role: "system", content: systemPrompt },
-                    { role: "user", content: `Guest Question (about property "${propertyId}"): "${userQuery}"` }
+                    { role: "user", content: userQuery }
                 ],
-                temperature: 0.2,
-                max_tokens: 300,
+                temperature: 0.2, // Low temp for WhatsApp
+                max_tokens: 300, 
             });
             if (completion.choices && completion.choices[0].message && completion.choices[0].message.content) {
                 llmResponseText = completion.choices[0].message.content.trim();
-                console.log(`JS Webhook: LLM response received: "${llmResponseText.substring(0,100)}..."`);
+                console.log(`WhatsApp API: LLM response: "${llmResponseText.substring(0,100)}..."`);
             } else {
-                console.error("JS Webhook: No response content from OpenRouter:", JSON.stringify(completion, null, 2));
+                console.error("WhatsApp API: No response content from OpenRouter:", JSON.stringify(completion, null, 2));
+                llmResponseText = `Received an unusual AI response for '${propertyId}'. Try again.`;
             }
         } catch (error) {
-            console.error("JS Webhook: Error calling OpenRouter API:", error.response ? JSON.stringify(error.response.data, null, 2) : error.message);
+            console.error("WhatsApp API: Error calling OpenRouter API:", error.response ? JSON.stringify(error.response.data, null, 2) : error.message, error.stack);
+             llmResponseText = "Sorry, I'm having trouble thinking right now. Please try again.";
         }
     }
 
-    // Asynchronously send reply via Twilio REST API using the retry mechanism
-    // This function is now async, so we await its completion (or final failure after retries)
-    // before sending the 200 OK. This is important because we want to know if it ultimately failed.
-    // However, for user experience, we still send 200 OK to Twilio quickly.
-    // The `sendTwilioMessageWithRetry` is "fire-and-forget" in the context of the main handler's response to *Twilio's incoming webhook*.
-    // We don't make THIS handler await the final outcome of sendTwilioMessageWithRetry before returning 200 OK.
-    // The `await` was removed from the IIFE.
-    (async () => {
-        await sendTwilioMessageWithRetry({
-            body: llmResponseText,
-            from: TWILIO_WHATSAPP_SENDER,
-            to: fromNumber,
-        });
-    })();
-
+    sendTwilioMessageWithRetry({
+        body: llmResponseText,
+        from: TWILIO_WHATSAPP_SENDER,
+        to: fromNumber,
+    });
 
     const twiml = new twilio.twiml.MessagingResponse();
     res.setHeader('Content-Type', 'text/xml');
-    console.log("JS Webhook: --- Request Processing Complete. Sending 200 OK (empty TwiML) to Twilio. ---");
+    console.log("WhatsApp API: --- Request Processing Complete. Sending 200 OK to Twilio. ---");
     return res.status(200).send(twiml.toString());
 }
