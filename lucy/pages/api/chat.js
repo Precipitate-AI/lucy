@@ -92,6 +92,40 @@ async function getGoogleEmbeddingForQueryJS(text) {
     }
 }
 
+// Helper function to create an enhanced query that includes recent context
+function createContextAwareQuery(userQuery, chatHistory) {
+    if (!chatHistory || chatHistory.length === 0) {
+        return userQuery;
+    }
+    
+    // Get last few messages for context (limit to prevent token overflow)
+    const recentHistory = chatHistory.slice(-4); // Last 4 messages (2 exchanges)
+    
+    // Check if the current query might be referring to previous context
+    const referentialWords = ['it', 'that', 'this', 'they', 'them', 'there', 'those', 'these'];
+    const hasReference = referentialWords.some(word => 
+        userQuery.toLowerCase().includes(` ${word} `) || 
+        userQuery.toLowerCase().startsWith(`${word} `)
+    );
+    
+    if (hasReference) {
+        // Build context from recent messages
+        const contextParts = [];
+        recentHistory.forEach(msg => {
+            if (msg.sender === 'user') {
+                contextParts.push(`Previous question: ${msg.text}`);
+            }
+        });
+        
+        if (contextParts.length > 0) {
+            // Create an enhanced query for better embedding search
+            return `${contextParts.join('. ')}. Current question: ${userQuery}`;
+        }
+    }
+    
+    return userQuery;
+}
+
 export default async function handler(req, res) {
     if (req.method !== 'POST') {
         res.setHeader('Allow', 'POST');
@@ -116,19 +150,23 @@ export default async function handler(req, res) {
     }
 
     console.log(`Chat API: Received query for property "${propertyId}": "${userQuery}"`);
+    console.log(`Chat API: Chat history length: ${chatHistory ? chatHistory.length : 0}`);
 
     let contextChunks = [];
     let hasPropertyContextForLLM = false; 
 
     if (googleEmbeddingGenAIModel) {
         try {
-            console.log(`Chat API: Generating embedding for query: "${userQuery.substring(0,50)}..."`);
-            const queryEmbedding = await getGoogleEmbeddingForQueryJS(userQuery);
+            // Create context-aware query for better RAG results
+            const enhancedQuery = createContextAwareQuery(userQuery, chatHistory);
+            console.log(`Chat API: Enhanced query for embedding: "${enhancedQuery.substring(0,100)}..."`);
+            
+            const queryEmbedding = await getGoogleEmbeddingForQueryJS(enhancedQuery);
             
             console.log(`Chat API: Querying Pinecone index '${PINECONE_INDEX_NAME}' with filter for propertyId: '${propertyId}'`);
             const queryResponse = await pineconeIndex.query({
                 vector: queryEmbedding,
-                topK: 3, 
+                topK: 5, // Increased from 3 to 5 for better context coverage
                 filter: { propertyId: propertyId },
                 includeMetadata: true,
             });
@@ -138,7 +176,7 @@ export default async function handler(req, res) {
                     .map(match => match.metadata && match.metadata.text ? match.metadata.text.trim() : "")
                     .filter(Boolean); 
                 if (contextChunks.length > 0) {
-                    hasPropertyContextForLLM = true; // If Pinecone returns anything,flag it for the LLM prompt
+                    hasPropertyContextForLLM = true;
                     console.log(`Chat API: Retrieved ${contextChunks.length} context chunks from Pinecone for property '${propertyId}'.`);
                 } else {
                      console.log(`Chat API: Pinecone query for '${propertyId}' returned matches, but no valid text metadata after filtering.`);
@@ -148,7 +186,6 @@ export default async function handler(req, res) {
             }
         } catch (error) {
             console.error(`Chat API: Error during RAG for P-ID '${propertyId}':`, error.message);
-            // Ensure context is empty and flag is false if RAG fails
             contextChunks = [];
             hasPropertyContextForLLM = false;
         }
@@ -167,7 +204,16 @@ export default async function handler(req, res) {
     }
     console.log(`Chat API: Property's city: ${cityFromProperty}. Has RAG context to pass to LLM: ${hasPropertyContextForLLM}`);
 
-    const systemPrompt = `You are Lucy, a multi-skilled AI assistant for guests at property "${propertyId}".
+    // Enhanced system prompt with conversation awareness
+    const systemPrompt = `You are Lucy, a remarkably charming, kind, and warm AI assistant. You have years of experience living in and exploring Bali, making you a true local expert. You are currently assisting a guest at property "${propertyId}". Your goal is to be exceptionally helpful and make their stay wonderful.
+
+IMPORTANT CONVERSATION CONTEXT:
+- You are engaged in an ongoing conversation with the guest
+- Pay attention to the chat history to understand the full context
+- Reference previous topics naturally when relevant
+- Remember what the guest has already asked about to avoid repetition
+- If the guest refers to "it", "that", "there" etc., understand they're referring to something from earlier in the conversation
+
 The guest's current question is: "${userQuery}"
 
 Your primary task is to determine the NATURE of the guest's question and respond accordingly:
@@ -175,33 +221,33 @@ Your primary task is to determine the NATURE of the guest's question and respond
 TYPE 1: PROPERTY-SPECIFIC QUESTION
 - This is a question directly about property "${propertyId}" (e.g., "wifi password?", "how does the AC work?", "what's the address for ${propertyId}?").
 - IF the question is Type 1:
-    1. You HAVE BEEN PROVIDED with the following "Property Information Context" for "${propertyId}":
-    ---
-    ${contextForLLM} 
-    ---
-    (Note: If the context above says "No specific property information was retrieved", it means RAG found nothing relevant from the database for this query for this property.)
-    2. Answer the question ("${userQuery}") USING ONLY information found within this "Property Information Context".
-    3. If the "Property Information Context" (especially if it's not "No specific property information...") DOES NOT contain the answer for "{propertyId}", then state: "I checked the information for property '${propertyId}', but I couldn't find specific details on that particular topic." DO NOT use your general knowledge for Type 1 questions if the context is missing the answer or says no info was retrieved.
+   1. You HAVE BEEN PROVIDED with the following "Property Information Context" for "${propertyId}":
+   ---
+   ${contextForLLM}
+   ---
+   (Note: If the context above says "No specific property information was retrieved", it means RAG found nothing relevant from the database for this query for this property.)
+   2. Answer the question ("${userQuery}") USING ONLY information found within this "Property Information Context".
+   3. If the "Property Information Context" (especially if it's not "No specific property information...") DOES NOT contain the answer for "${propertyId}", then state: "I'm sorry, I'm unsure about that. You might need to ask one of my human teammates in this group chat for more help here." DO NOT use your general knowledge for Type 1 questions if the context is missing the answer or says no info was retrieved.
 
 TYPE 2: GENERAL CITY/LOCATION QUESTION
-- This is a question about ${cityFromProperty} (the city where "${propertyId}" is located) or ANOTHER city/location explicitly mentioned in "${userQuery}" (e.g., "things to do in ${cityFromProperty}", "best restaurants in Uluwatu", "how to get to Dubai Mall?").
+- This is a question about ${cityFromProperty} (the city where "${propertyId}" is located) or ANOTHER city/location explicitly mentioned in "${userQuery}" (e.g., "things to do in ${cityFromProperty}", "best restaurants in Uluwatu", "how to get to the airport?").
 - IF the question is Type 2 AND it is NOT successfully answered as a Type 1 question (because context was missing, context said no info retrieved, or context was irrelevant to the question):
-    1. Answer the question ("${userQuery}") using your general knowledge as a helpful city/travel expert.
-    2. When doing so, clearly state that you are providing general information, for example: "Regarding ${cityFromProperty}, generally..." or "As general information for a place like Uluwatu..."
+   1. Answer the question ("${userQuery}") using your general knowledge as a helpful city/travel expert or use internet search results.
 
 TYPE 3: OTHER GENERAL KNOWLEDGE QUESTION
 - This is a question not fitting Type 1 or Type 2 (e.g., "what's the capital of France?").
 - IF the question is Type 3:
-    1. Answer using your general knowledge.
+   1. Answer using your general knowledge or internet search results.
 
 IF YOU CANNOT ANSWER or are unsure after considering these types:
-- State: "I'm sorry, I don't have information on that topic right now."
+- State: "I'm sorry, I'm unsure about that. You might need to ask one of my human teammates in this group chat for more help here. Can I help you with anything else?"
 
 CRITICAL:
 - Prioritize answering as Type 1 if the question seems property-specific and the provided context (if any) helps.
 - If Type 1 fails due to lack of specific context in the retrieved info, then consider Type 2.
-- Be concise.`;
-
+- Always maintain a friendly, polite, and warm conversational tone. Offer a little extra helpful tip or suggestion if appropriate, especially for general city questions.
+- Be concise but complete.
+- Build upon the conversation naturally - don't repeat information you've already provided unless specifically asked.`;
 
     let llmResponseText = `I'm sorry, I encountered an issue processing your request for property "${propertyId}".`;
 
@@ -209,34 +255,45 @@ CRITICAL:
         try {
             const messagesForLLM = [{ role: "system", content: systemPrompt }];
             
+            // Process chat history more intelligently
             if (Array.isArray(chatHistory) && chatHistory.length > 0) {
-                chatHistory.forEach(msg => {
+                // Limit history to prevent token overflow while maintaining context
+                const maxHistoryItems = 10; // Last 10 messages (5 exchanges)
+                const recentHistory = chatHistory.slice(-maxHistoryItems);
+                
+                recentHistory.forEach(msg => {
                     let role = 'user';
-                    if (msg.sender === 'bot' || msg.sender === 'assistant') role = 'assistant';
-                    else if (msg.sender === 'user') role = 'user';
-                    if (role === 'user' || role === 'assistant') {
-                         messagesForLLM.push({ role: role, content: msg.text });
+                    if (msg.sender === 'bot' || msg.sender === 'assistant' || msg.sender === 'lucy') {
+                        role = 'assistant';
+                    } else if (msg.sender === 'user') {
+                        role = 'user';
+                    }
+                    
+                    if ((role === 'user' || role === 'assistant') && msg.text) {
+                        messagesForLLM.push({ role: role, content: msg.text });
                     }
                 });
+                
+                console.log(`Chat API: Added ${recentHistory.length} history messages to context`);
             }
+            
             messagesForLLM.push({ role: "user", content: userQuery }); 
             
-            console.log(`Chat API: Sending final prompt to OpenRouter (${llmModelToUse}). System prompt length: ${systemPrompt.length}. History items: ${chatHistory ? chatHistory.length : 0}`);
-            // For intense debugging:
-            // console.log("DEBUG: Chat API Final System Prompt:\n", systemPrompt); 
+            console.log(`Chat API: Sending to OpenRouter (${llmModelToUse}). Total messages: ${messagesForLLM.length}, History items included: ${messagesForLLM.length - 2}`);
 
             const completion = await openrouterLlmClient.chat.completions.create({
                 model: llmModelToUse,
                 messages: messagesForLLM,
-                temperature: 0.2, // Very low temperature to follow strict instructions
-                max_tokens: 450,
+                temperature: 0.3,
+                max_tokens: 600, // Increased slightly for conversation context
             });
+            
             if (completion.choices && completion.choices[0].message && completion.choices[0].message.content) {
                 llmResponseText = completion.choices[0].message.content.trim();
                 console.log(`Chat API: LLM response received: "${llmResponseText.substring(0,100)}..."`);
             } else {
                 console.error("Chat API: No valid response content from OpenRouter:", JSON.stringify(completion, null, 2));
-                llmResponseText = `I received an unusual response from my AI brain for '${propertyId}'.`
+                llmResponseText = `I received an unusual response from my AI brain for '${propertyId}'.`;
             }
         } catch (error) {
             console.error("Chat API: Error calling OpenRouter API:", error.response ? JSON.stringify(error.response.data, null, 2) : error.message, error.stack);
