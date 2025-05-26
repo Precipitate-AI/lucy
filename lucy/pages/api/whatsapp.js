@@ -83,7 +83,6 @@ if (GOOGLE_API_KEY) {
 }
 
 async function getGoogleEmbeddingForQueryJS(text) {
-    // ... (same as in chat.js)
     if (!googleEmbeddingGenAIModel) {
         console.error("WhatsApp API: Google AI embedding model not initialized.");
         throw new Error("Embedding service (Google JS) not configured.");
@@ -107,8 +106,41 @@ async function getGoogleEmbeddingForQueryJS(text) {
     }
 }
 
+// Helper function to create an enhanced query that includes recent context (from chat.js)
+function createContextAwareQuery(userQuery, chatHistory) {
+    if (!chatHistory || chatHistory.length === 0) {
+        return userQuery;
+    }
+    
+    // Get last few messages for context (limit to prevent token overflow)
+    const recentHistory = chatHistory.slice(-4); // Last 4 messages (2 exchanges)
+    
+    // Check if the current query might be referring to previous context
+    const referentialWords = ['it', 'that', 'this', 'they', 'them', 'there', 'those', 'these'];
+    const hasReference = referentialWords.some(word => 
+        userQuery.toLowerCase().includes(` ${word} `) || 
+        userQuery.toLowerCase().startsWith(`${word} `)
+    );
+    
+    if (hasReference) {
+        // Build context from recent messages
+        const contextParts = [];
+        recentHistory.forEach(msg => {
+            if (msg.sender === 'user') {
+                contextParts.push(`Previous question: ${msg.text}`);
+            }
+        });
+        
+        if (contextParts.length > 0) {
+            // Create an enhanced query for better embedding search
+            return `${contextParts.join('. ')}. Current question: ${userQuery}`;
+        }
+    }
+    
+    return userQuery;
+}
+
 function extractPropertyIdFromMessage(twilioRequestBody, userMessage) {
-    // ... (same as before)
     const lowerMessage = userMessage.toLowerCase();
     const propertyKeywords = ["property", "unit", "villa", "apt", "apartment", "house", "staying at"];
     for (const keyword of propertyKeywords) {
@@ -122,7 +154,7 @@ function extractPropertyIdFromMessage(twilioRequestBody, userMessage) {
     return null;
 }
 
-// ... (sendTwilioMessageWithRetry - same as before) ...
+// sendTwilioMessageWithRetry - same as before
 const RETRYABLE_TWILIO_ERROR_CODES = ['ECONNRESET', 'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'EPIPE'];
 const MAX_SEND_RETRIES = 2;
 const INITIAL_RETRY_DELAY_MS = 500;
@@ -155,9 +187,7 @@ async function sendTwilioMessageWithRetry(messagePayload, attempt = 1) {
     }
 }
 
-
 export default async function handler(req, res) {
-    // ... (initial checks, Twilio validation - same as before) ...
     console.log("\n--- WhatsApp API Request Received ---");
     console.log("Timestamp:", new Date().toISOString());
     console.log("Method:", req.method);
@@ -170,7 +200,7 @@ export default async function handler(req, res) {
     
     if (!twilioClient || !openrouterLlmClient || !googleEmbeddingGenAIModel || !PINECONE_INDEX_NAME || !PINECONE_API_KEY) {
         console.error("WhatsApp API: CRITICAL: One or more core services not initialized.");
-        const errorMessage = "I'm having some technical difficulties. Please contact support or try again later.";
+        const errorMessage = "I'm sorry, I'm having some technical difficulties. Please ask one of my human teammates in this group chat for help here.";
         if (twilioClient && TWILIO_WHATSAPP_SENDER && req.body && req.body.From) {
              sendTwilioMessageWithRetry({ to: req.body.From, from: TWILIO_WHATSAPP_SENDER, body: errorMessage });
         }
@@ -238,37 +268,46 @@ export default async function handler(req, res) {
     const pineconeReady = await initializePinecone();
     if (!pineconeReady || !pineconeIndex) {
          console.error("WhatsApp API: Pinecone index not available for RAG.");
-         const pineconeErrorMsg = "I'm having trouble accessing property info. Please try later or contact support.";
+         const pineconeErrorMsg = "I'm sorry, I'm having trouble accessing property info. You might need to ask one of my human teammates in this group chat for more help here.";
          sendTwilioMessageWithRetry({ body: pineconeErrorMsg, from: TWILIO_WHATSAPP_SENDER, to: fromNumber });
          return res.status(200).setHeader('Content-Type', 'text/xml').send(new twilio.twiml.MessagingResponse().toString());
     }
     
+    // Extract propertyId
     let propertyId = extractPropertyIdFromMessage(req.body, userQuery) || "Unit4BNelayanReefApartment";
     console.log(`WhatsApp API: Using Property ID: ${propertyId} for query.`);
+    
+    // Extract chatHistory if provided (for future WhatsApp context support)
+    const { chatHistory } = req.body;
+    console.log(`WhatsApp API: Chat history length: ${chatHistory ? chatHistory.length : 0}`);
 
     let contextChunks = [];
-    let hasPropertyContextForLLM = false; // Renamed for clarity
+    let hasPropertyContextForLLM = false;
 
     if (!googleEmbeddingGenAIModel) {
         console.error("WhatsApp API: Google Embedding Model not available. Cannot perform RAG.");
     } else {
         try {
-            console.log(`WhatsApp API: Getting embedding for query: "${userQuery.substring(0,50)}..." for P-ID "${propertyId}"`);
-            const queryEmbedding = await getGoogleEmbeddingForQueryJS(userQuery);
+            // Create context-aware query for better RAG results (matching chat.js)
+            const enhancedQuery = createContextAwareQuery(userQuery, chatHistory);
+            console.log(`WhatsApp API: Enhanced query for embedding: "${enhancedQuery.substring(0,100)}..."`);
+            
+            const queryEmbedding = await getGoogleEmbeddingForQueryJS(enhancedQuery);
             
             console.log(`WhatsApp API: Querying Pinecone for P-ID '${propertyId}'.`);
             const queryResponse = await pineconeIndex.query({
                 vector: queryEmbedding,
-                topK: 2, 
+                topK: 5, // Increased from 2 to match chat.js
                 filter: { propertyId: propertyId },
                 includeMetadata: true,
             });
+            
             if (queryResponse.matches && queryResponse.matches.length > 0) {
                 contextChunks = queryResponse.matches
                     .map(match => match.metadata && match.metadata.text ? match.metadata.text.trim() : "")
                     .filter(Boolean);
                 if (contextChunks.length > 0) {
-                    hasPropertyContextForLLM = true; // If Pinecone returns anything, flag it
+                    hasPropertyContextForLLM = true;
                     console.log(`WhatsApp API: Retrieved ${contextChunks.length} context chunks for P-ID '${propertyId}'.`);
                 } else {
                     console.log(`WhatsApp API: Pinecone query for P-ID '${propertyId}' had matches but no text.`);
@@ -294,73 +333,104 @@ export default async function handler(req, res) {
     }
     console.log(`WhatsApp API: Property's city: ${cityFromProperty}. Has RAG context for LLM: ${hasPropertyContextForLLM}`);
 
-    // Identical system prompt as in chat.js
-    const systemPrompt = `You are Lucy, a multi-skilled AI assistant for guests at property "${propertyId}".
-The guest's current question is: "${userQuery}" (received via WhatsApp)
+    // Enhanced system prompt with conversation awareness (matching chat.js)
+    const systemPrompt = `You are Lucy, a remarkably charming, kind, and warm AI assistant. You have years of experience living in and exploring Bali, making you a true local expert. You are currently assisting a guest at property "${propertyId}". Your goal is to be exceptionally helpful and make their stay wonderful.
+
+IMPORTANT CONVERSATION CONTEXT:
+- You are engaged in an ongoing conversation with the guest via WhatsApp
+- Pay attention to the chat history to understand the full context
+- Reference previous topics naturally when relevant
+- Remember what the guest has already asked about to avoid repetition
+- If the guest refers to "it", "that", "there" etc., understand they're referring to something from earlier in the conversation
+
+The guest's current question is: "${userQuery}"
 
 Your primary task is to determine the NATURE of the guest's question and respond accordingly:
 
 TYPE 1: PROPERTY-SPECIFIC QUESTION
 - This is a question directly about property "${propertyId}" (e.g., "wifi password?", "how does the AC work?", "what's the address for ${propertyId}?").
 - IF the question is Type 1:
-    1. You HAVE BEEN PROVIDED with the following "Property Information Context" for "${propertyId}":
-    ---
-    ${contextForLLM}
-    ---
-    (Note: If the context above says "No specific property information was retrieved", it means RAG found nothing relevant from the database for this query for this property.)
-    2. Answer the question ("${userQuery}") USING ONLY information found within this "Property Information Context".
-    3. If the "Property Information Context" (especially if it's not "No specific property information...") DOES NOT contain the answer for "{propertyId}", then state: "I checked the information for property '${propertyId}', but I couldn't find specific details on that particular topic in my current information." DO NOT use your general knowledge for Type 1 questions if the context is missing the answer or says no info was retrieved.
+   1. You HAVE BEEN PROVIDED with the following "Property Information Context" for "${propertyId}":
+   ---
+   ${contextForLLM}
+   ---
+   (Note: If the context above says "No specific property information was retrieved", it means RAG found nothing relevant from the database for this query for this property.)
+   2. Answer the question ("${userQuery}") USING ONLY information found within this "Property Information Context".
+   3. If the "Property Information Context" (especially if it's not "No specific property information...") DOES NOT contain the answer for "${propertyId}", then state: "I'm sorry, I'm unsure about that. You might need to ask one of my human teammates in this group chat for more help here." DO NOT use your general knowledge for Type 1 questions if the context is missing the answer or says no info was retrieved.
 
 TYPE 2: GENERAL CITY/LOCATION QUESTION
-- This is a question about ${cityFromProperty} (the city where "${propertyId}" is located) or ANOTHER city/location explicitly mentioned in "${userQuery}" (e.g., "things to do in ${cityFromProperty}", "best restaurants in Uluwatu", "how to get to Dubai Mall?").
+- This is a question about ${cityFromProperty} (the city where "${propertyId}" is located) or ANOTHER city/location explicitly mentioned in "${userQuery}" (e.g., "things to do in ${cityFromProperty}", "best restaurants in Uluwatu", "how to get to the airport?").
 - IF the question is Type 2 AND it is NOT successfully answered as a Type 1 question (because context was missing, context said no info retrieved, or context was irrelevant to the question):
-    1. Answer the question ("${userQuery}") using your general knowledge as a helpful city/travel expert.
-    2. When doing so, clearly state that you are providing general information, for example: "Regarding ${cityFromProperty}, generally..." or "As general information for a place like Uluwatu..."
+   1. Answer the question ("${userQuery}") using your general knowledge as a helpful city/travel expert or use internet search results.
 
 TYPE 3: OTHER GENERAL KNOWLEDGE QUESTION
 - This is a question not fitting Type 1 or Type 2 (e.g., "what's the capital of France?").
 - IF the question is Type 3:
-    1. Answer using your general knowledge.
+   1. Answer using your general knowledge or internet search results.
 
 IF YOU CANNOT ANSWER or are unsure after considering these types:
-- State: "I'm sorry, I don't have information on that topic right now."
+- State: "I'm sorry, I'm unsure about that. You might need to ask one of my human teammates in this group chat for more help here. Can I help you with anything else?"
 
 CRITICAL:
 - Prioritize answering as Type 1 if the question seems property-specific and the provided context (if any) helps.
 - If Type 1 fails due to lack of specific context in the retrieved info, then consider Type 2.
-- For WhatsApp, keep answers very brief and to the point. Use short sentences.
-- Do not make up answers.`;
+- For WhatsApp, keep answers brief but complete. Use short sentences and clear formatting.
+- Always maintain a friendly, polite, and warm conversational tone. Offer a little extra helpful tip or suggestion if appropriate, especially for general city questions.
+- Be concise but complete.
+- Build upon the conversation naturally - don't repeat information you've already provided unless specifically asked.`;
 
-
-    let llmResponseText = `I'm sorry, I couldn't find an answer for that regarding property "${propertyId}". Please try rephrasing or contact support.`;
+    let llmResponseText = `I'm sorry, I encountered an issue processing your request for property "${propertyId}".`;
 
     if (!openrouterLlmClient) {
         console.error("WhatsApp API: OpenRouter client not initialized.");
-        llmResponseText = "My AI connection is down for this property. Contact support.";
+        llmResponseText = "My connection to the AI brain is offline for '${propertyId}'. Please inform support.";
     } else {
         try {
-            console.log(`WhatsApp API: Sending final prompt to OpenRouter (${llmModelToUse}) for P-ID ${propertyId}. System prompt length: ${systemPrompt.length}`);
-            // console.log("DEBUG: WhatsApp API Final System Prompt:\n", systemPrompt);
+            const messagesForLLM = [{ role: "system", content: systemPrompt }];
+            
+            // Process chat history if available (for future context support)
+            if (Array.isArray(chatHistory) && chatHistory.length > 0) {
+                // Limit history to prevent token overflow while maintaining context
+                const maxHistoryItems = 10; // Last 10 messages (5 exchanges)
+                const recentHistory = chatHistory.slice(-maxHistoryItems);
+                
+                recentHistory.forEach(msg => {
+                    let role = 'user';
+                    if (msg.sender === 'bot' || msg.sender === 'assistant' || msg.sender === 'lucy') {
+                        role = 'assistant';
+                    } else if (msg.sender === 'user') {
+                        role = 'user';
+                    }
+                    
+                    if ((role === 'user' || role === 'assistant') && msg.text) {
+                        messagesForLLM.push({ role: role, content: msg.text });
+                    }
+                });
+                
+                console.log(`WhatsApp API: Added ${recentHistory.length} history messages to context`);
+            }
+            
+            messagesForLLM.push({ role: "user", content: userQuery });
+            
+            console.log(`WhatsApp API: Sending to OpenRouter (${llmModelToUse}). Total messages: ${messagesForLLM.length}, History items included: ${messagesForLLM.length - 2}`);
             
             const completion = await openrouterLlmClient.chat.completions.create({
                 model: llmModelToUse,
-                messages: [
-                    { role: "system", content: systemPrompt },
-                    { role: "user", content: userQuery }
-                ],
-                temperature: 0.2, // Low temp for WhatsApp
-                max_tokens: 300, 
+                messages: messagesForLLM,
+                temperature: 0.3, // Aligned with chat.js (was 0.2)
+                max_tokens: 600, // Increased to match chat.js (was 300)
             });
+            
             if (completion.choices && completion.choices[0].message && completion.choices[0].message.content) {
                 llmResponseText = completion.choices[0].message.content.trim();
                 console.log(`WhatsApp API: LLM response: "${llmResponseText.substring(0,100)}..."`);
             } else {
                 console.error("WhatsApp API: No response content from OpenRouter:", JSON.stringify(completion, null, 2));
-                llmResponseText = `Received an unusual AI response for '${propertyId}'. Try again.`;
+                llmResponseText = `I received an unusual response from my AI brain for '${propertyId}'.`;
             }
         } catch (error) {
             console.error("WhatsApp API: Error calling OpenRouter API:", error.response ? JSON.stringify(error.response.data, null, 2) : error.message, error.stack);
-             llmResponseText = "Sorry, I'm having trouble thinking right now. Please try again.";
+            llmResponseText = `Sorry, I'm having trouble connecting to my AI brain right now for '${propertyId}'. Please try again.`;
         }
     }
 
