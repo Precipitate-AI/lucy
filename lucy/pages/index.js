@@ -1,3 +1,5 @@
+//pages/index.js
+
 import { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
 import ReactMarkdown from 'react-markdown';

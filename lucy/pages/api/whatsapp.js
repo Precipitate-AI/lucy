@@ -1,3 +1,5 @@
+//pages/api/whatsapp.js
+
 import twilio from 'twilio';
 import { Pinecone } from '@pinecone-database/pinecone';
 import OpenAI from 'openai';
