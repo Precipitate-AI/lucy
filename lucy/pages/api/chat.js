@@ -1,5 +1,3 @@
-//pages/api/chat.js
-
 import { Pinecone } from '@pinecone-database/pinecone';
 import OpenAI from 'openai'; // For OpenRouter
 import { GoogleGenerativeAI, TaskType } from '@google/generative-ai'; // For Google Embeddings
@@ -52,7 +50,7 @@ if (OPENROUTER_API_KEY) {
 } else {
     console.error("Chat API: CRITICAL: OPENROUTER_API_KEY not set.");
 }
-const llmModelToUse = OPENROUTER_MODEL_NAME || "google/gemini-flash-1.5";
+const llmModelToUse = OPENROUTER_MODEL_NAME || "google/gemini-flash-2.5-preview-05-20";
 
 let googleGenAI;
 let googleEmbeddingGenAIModel;
@@ -128,6 +126,37 @@ function createContextAwareQuery(userQuery, chatHistory) {
     return userQuery;
 }
 
+// Helper function to clean LLM responses
+function cleanLLMResponse(response) {
+    // Remove any lines that look like instructions or reasoning
+    const lines = response.split('\n');
+    const cleanedLines = lines.filter(line => {
+        const lowerLine = line.toLowerCase().trim();
+        // Filter out lines that look like internal reasoning
+        return !lowerLine.includes('type 1:') && 
+               !lowerLine.includes('type 2:') && 
+               !lowerLine.includes('type 3:') &&
+               !lowerLine.includes('instructions:') &&
+               !lowerLine.includes('step ') &&
+               !lowerLine.startsWith('context:') &&
+               !lowerLine.startsWith('note:') &&
+               !lowerLine.includes('property information context') &&
+               !lowerLine.includes('critical:') &&
+               !lowerLine.includes('prioritize answering') &&
+               !line.trim().match(/^[a-z]\.\s/) && // Remove "a. ", "b. ", etc.
+               !line.trim().match(/^\d+\.\s.*:$/); // Remove "1. Something:"
+    });
+    
+    let cleanedResponse = cleanedLines.join('\n').trim();
+    
+    // If the response starts with a quote, remove it
+    if (cleanedResponse.startsWith('"') && cleanedResponse.endsWith('"')) {
+        cleanedResponse = cleanedResponse.slice(1, -1);
+    }
+    
+    return cleanedResponse;
+}
+
 export default async function handler(req, res) {
     if (req.method !== 'POST') {
         res.setHeader('Allow', 'POST');
@@ -197,14 +226,9 @@ export default async function handler(req, res) {
 
     const contextForLLM = hasPropertyContextForLLM ? contextChunks.join("\n\n---\n\n") : "No specific property information was retrieved for this query.";
     
-    let cityFromProperty = "the current location";
-    const pidLower = propertyId.toLowerCase();
-    if (pidLower.includes("bali") || pidLower.includes("nelayan") || pidLower.includes("seminyak") || pidLower.includes("ubud") || pidLower.includes("canggu")) {
-        cityFromProperty = "Bali";
-    } else if (pidLower.includes("dubai")) {
-        cityFromProperty = "Dubai";
-    }
-    console.log(`Chat API: Property's city: ${cityFromProperty}. Has RAG context to pass to LLM: ${hasPropertyContextForLLM}`);
+    // Since we only handle Bali properties
+    const cityFromProperty = "Bali";
+    console.log(`Chat API: Property location: ${cityFromProperty}. Has RAG context to pass to LLM: ${hasPropertyContextForLLM}`);
 
     // Enhanced system prompt with conversation awareness
     const systemPrompt = `You are Lucy, a remarkably charming, kind, and warm AI assistant. You have years of experience living in and exploring Bali, making you a true local expert. You are currently assisting a guest at property "${propertyId}". Your goal is to be exceptionally helpful and make their stay wonderful.
@@ -231,10 +255,10 @@ TYPE 1: PROPERTY-SPECIFIC QUESTION
    2. Answer the question ("${userQuery}") USING ONLY information found within this "Property Information Context".
    3. If the "Property Information Context" (especially if it's not "No specific property information...") DOES NOT contain the answer for "${propertyId}", then state: "I'm sorry, I'm unsure about that. You might need to ask one of my human teammates in this group chat for more help here." DO NOT use your general knowledge for Type 1 questions if the context is missing the answer or says no info was retrieved.
 
-TYPE 2: GENERAL CITY/LOCATION QUESTION
-- This is a question about ${cityFromProperty} (the city where "${propertyId}" is located) or ANOTHER city/location explicitly mentioned in "${userQuery}" (e.g., "things to do in ${cityFromProperty}", "best restaurants in Uluwatu", "how to get to the airport?").
+TYPE 2: GENERAL BALI/LOCATION QUESTION
+- This is a question about Bali or specific areas within Bali mentioned in "${userQuery}" (e.g., "things to do in Seminyak", "best restaurants in Canggu", "how to get to the airport?").
 - IF the question is Type 2 AND it is NOT successfully answered as a Type 1 question (because context was missing, context said no info retrieved, or context was irrelevant to the question):
-   1. Answer the question ("${userQuery}") using your general knowledge as a helpful city/travel expert or use internet search results.
+   1. Answer the question ("${userQuery}") using your general knowledge as a helpful Bali expert or use internet search results.
 
 TYPE 3: OTHER GENERAL KNOWLEDGE QUESTION
 - This is a question not fitting Type 1 or Type 2 (e.g., "what's the capital of France?").
@@ -247,9 +271,10 @@ IF YOU CANNOT ANSWER or are unsure after considering these types:
 CRITICAL:
 - Prioritize answering as Type 1 if the question seems property-specific and the provided context (if any) helps.
 - If Type 1 fails due to lack of specific context in the retrieved info, then consider Type 2.
-- Always maintain a friendly, polite, and warm conversational tone. Offer a little extra helpful tip or suggestion if appropriate, especially for general city questions.
+- Always maintain a friendly, polite, and warm conversational tone. Offer a little extra helpful tip or suggestion if appropriate, especially for general Bali questions.
 - Be concise but complete.
-- Build upon the conversation naturally - don't repeat information you've already provided unless specifically asked.`;
+- Build upon the conversation naturally - don't repeat information you've already provided unless specifically asked.
+- PROVIDE ONLY THE FINAL ANSWER, not your reasoning process.`;
 
     let llmResponseText = `I'm sorry, I encountered an issue processing your request for property "${propertyId}".`;
 
@@ -291,7 +316,8 @@ CRITICAL:
             });
             
             if (completion.choices && completion.choices[0].message && completion.choices[0].message.content) {
-                llmResponseText = completion.choices[0].message.content.trim();
+                const rawResponse = completion.choices[0].message.content.trim();
+                llmResponseText = cleanLLMResponse(rawResponse);
                 console.log(`Chat API: LLM response received: "${llmResponseText.substring(0,100)}..."`);
             } else {
                 console.error("Chat API: No valid response content from OpenRouter:", JSON.stringify(completion, null, 2));
