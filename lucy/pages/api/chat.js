@@ -1,3 +1,5 @@
+//pages/api/chat.js
+
 import { Pinecone } from '@pinecone-database/pinecone';
 import OpenAI from 'openai'; // For OpenRouter
 import { GoogleGenerativeAI, TaskType } from '@google/generative-ai'; // For Google Embeddings
