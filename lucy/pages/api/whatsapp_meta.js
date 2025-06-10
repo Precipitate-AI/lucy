@@ -20,38 +20,21 @@ const {
 } = process.env;
 
 const GROUP_CHAT_TRIGGER_WORD = "@lucy";
-const TOP_K_RESULTS = 10;
-const DEFAULT_PROPERTY_ID = "Unit4BNelayanReefApartment";
 
-// Initialize OpenRouter
-let openrouterLlmClient;
-if (OPENROUTER_API_KEY) {
-    openrouterLlmClient = new OpenAI({
-        baseURL: "https://openrouter.ai/api/v1",
-        apiKey: OPENROUTER_API_KEY,
-        defaultHeaders: {
-            "HTTP-Referer": OPENROUTER_SITE_URL || (VERCEL_URL ? `https://${VERCEL_URL}` : "http://localhost:3000"),
-            "X-Title": OPENROUTER_APP_NAME || "LucyWhatsAppBot",
-        },
-    });
-    console.log('Meta WhatsApp: OpenRouter initialized');
+// Helper function to get readable property name
+function getReadablePropertyName(propertyId) {
+    const propertyMap = {
+        'Casa_Nalani': 'Casa Nalani',
+        'Unit_1B_Nelayan_Reef_Apartment_copy': 'Unit 1B Nelayan Reef Apartment',
+        'Unit_4B_Nelayan_Reef_Apartment': 'Unit 4B Nelayan Reef Apartment',
+        'Villa_Breeze': 'Villa Breeze',
+        'Villa_Loka': 'Villa Loka',
+        'Villa_Timur': 'Villa Timur',
+    };
+    return propertyMap[propertyId] || propertyId.replace(/_/g, ' ');
 }
 
-// Initialize Google AI
-let googleGenAI;
-let googleEmbeddingGenAIModel;
-if (GOOGLE_API_KEY) {
-    try {
-        googleGenAI = new GoogleGenerativeAI(GOOGLE_API_KEY);
-        const embeddingModelId = GOOGLE_EMBEDDING_MODEL_ID || "models/embedding-001";
-        googleEmbeddingGenAIModel = googleGenAI.getGenerativeModel({ model: embeddingModelId });
-        console.log("Meta WhatsApp: Google AI initialized");
-    } catch (error) {
-        console.error("Meta WhatsApp: Error initializing Google AI:", error);
-    }
-}
-
-// Initialize Pinecone
+// Initialize clients (same as in chat.js)
 let pinecone;
 let pineconeIndex;
 const initializePinecone = async () => {
@@ -61,10 +44,10 @@ const initializePinecone = async () => {
             if (!pinecone) pinecone = new Pinecone({ apiKey: PINECONE_API_KEY });
             pineconeIndex = pinecone.index(PINECONE_INDEX_NAME);
             await pineconeIndex.describeIndexStats();
-            console.log("Meta WhatsApp: Pinecone initialized");
+            console.log("WhatsApp API: Pinecone initialized");
             return true;
         } catch (error) {
-            console.error("Meta WhatsApp: Pinecone initialization error:", error);
+            console.error("WhatsApp API: Pinecone initialization error:", error);
             pineconeIndex = null;
             return false;
         }
@@ -72,41 +55,60 @@ const initializePinecone = async () => {
     return false;
 };
 
-// Helper functions
+let openrouterLlmClient;
+if (OPENROUTER_API_KEY) {
+    openrouterLlmClient = new OpenAI({
+        baseURL: "https://openrouter.ai/api/v1",
+        apiKey: OPENROUTER_API_KEY,
+        defaultHeaders: {
+            "HTTP-Referer": OPENROUTER_SITE_URL || (VERCEL_URL ? `https://${VERCEL_URL}` : "http://localhost:3000"),
+            "X-Title": OPENROUTER_APP_NAME || "LucyWhatsApp",
+        },
+    });
+}
+
+const llmModelToUse = OPENROUTER_MODEL_NAME || "google/gemini-flash-2.5-preview-05-20";
+
+let googleGenAI;
+let googleEmbeddingGenAIModel;
+if (GOOGLE_API_KEY) {
+    try {
+        googleGenAI = new GoogleGenerativeAI(GOOGLE_API_KEY);
+        const embeddingModelId = GOOGLE_EMBEDDING_MODEL_ID || "models/embedding-001";
+        googleEmbeddingGenAIModel = googleGenAI.getGenerativeModel({ model: embeddingModelId });
+        console.log("WhatsApp API: Google AI initialized");
+    } catch (error) {
+        console.error("WhatsApp API: Error initializing Google AI:", error);
+    }
+}
+
+// Use the same embeddings and cleaning functions from chat.js
 async function getGoogleEmbeddingForQueryJS(text) {
-    if (!googleEmbeddingGenAIModel || !text?.trim()) {
-        console.error("Missing Google embedding model or text");
-        return null;
+    if (!googleEmbeddingGenAIModel) {
+        console.error("WhatsApp API: Google AI embedding model not initialized.");
+        throw new Error("Embedding service (Google JS) not configured.");
     }
     try {
         const result = await googleEmbeddingGenAIModel.embedContent({
             content: { parts: [{ text: text }] },
             taskType: TaskType.RETRIEVAL_QUERY
         });
-        return result.embedding.values;
+        const embedding = result.embedding;
+        if (embedding && embedding.values && Array.isArray(embedding.values)) {
+            return embedding.values;
+        } else {
+            if (Array.isArray(embedding) && embedding.every(v => typeof v === 'number')) return embedding;
+            throw new Error("Failed to extract embedding values from Google AI JS response.");
+        }
     } catch (error) {
-        console.error("Error getting Google embedding:", error);
-        return null;
+        console.error("WhatsApp API: Error getting embedding for query:", error.message);
+        throw error;
     }
-}
-
-function cleanLLMResponse(response) {
-    return response
-        .replace(/【\d+(:\d+)?】/g, '')
-        .replace(/\[\d+(:\d+)?\]/g, '')
-        .replace(/\(\d+(:\d+)?\)/g, '')
-        .replace(/\d+\.\s*/g, '')
-        .replace(/\n{3,}/g, '\n\n')
-        .replace(/\*{2,}/g, '*')
-        .trim();
 }
 
 // Send message via Meta API
 async function sendWhatsAppMessage(to, text) {
     const url = `https://graph.facebook.com/v22.0/${META_PHONE_NUMBER_ID}/messages`;
-    
-    // Remove @g.us suffix if present for sending
-    const recipientNumber = to.replace('@g.us', '');
     
     try {
         const response = await fetch(url, {
@@ -118,7 +120,7 @@ async function sendWhatsAppMessage(to, text) {
             body: JSON.stringify({
                 messaging_product: 'whatsapp',
                 recipient_type: 'individual',
-                to: recipientNumber,
+                to: to,
                 type: 'text',
                 text: { body: text }
             })
@@ -126,119 +128,130 @@ async function sendWhatsAppMessage(to, text) {
         
         const result = await response.json();
         if (result.error) {
-            console.error('Meta WhatsApp: Send error:', result.error);
+            console.error('WhatsApp API: Send error:', result.error);
             return false;
         }
-        console.log('Meta WhatsApp: Message sent successfully');
         return true;
     } catch (error) {
-        console.error('Meta WhatsApp: Send error:', error);
+        console.error('WhatsApp API: Send error:', error);
         return false;
     }
 }
 
-// Process the query with RAG
-async function processQuery(fromNumber, userQuery, propertyId) {
+// Process query (similar to chat.js logic)
+async function processQuery(fromNumber, userQuery, propertyId = 'Casa_Nalani') {
     try {
-        // Initialize services
-        const pineconeReady = await initializePinecone();
-        if (!pineconeReady) {
-            await sendWhatsAppMessage(fromNumber, "I'm having trouble accessing property information right now. Please try again later.");
-            return;
-        }
+        await initializePinecone();
         
-        // Generate embedding for the query
-        const embedding = await getGoogleEmbeddingForQueryJS(userQuery);
-        if (!embedding) {
-            await sendWhatsAppMessage(fromNumber, "Sorry, I'm having trouble processing your question. Please try again.");
-            return;
-        }
+        // Get context from Pinecone (same as chat.js)
+        let contextChunks = [];
+        let hasPropertyContextForLLM = false;
         
-        // Query Pinecone
-        const queryResponse = await pineconeIndex.namespace(propertyId).query({
-            vector: embedding,
-            topK: TOP_K_RESULTS,
-            includeMetadata: true
-        });
-        
-        // Extract context from results
-        const contexts = [];
-        for (const match of queryResponse.matches) {
-            const content = match.metadata?.content || match.metadata?.text || '';
-            if (content && match.score > 0.5) {
-                contexts.push(content);
+        if (googleEmbeddingGenAIModel && pineconeIndex) {
+            try {
+                const queryEmbedding = await getGoogleEmbeddingForQueryJS(userQuery);
+                
+                const queryResponse = await pineconeIndex.query({
+                    vector: queryEmbedding,
+                    topK: 5,
+                    filter: { propertyId: propertyId },
+                    includeMetadata: true,
+                });
+
+                if (queryResponse.matches && queryResponse.matches.length > 0) {
+                    contextChunks = queryResponse.matches
+                        .map(match => match.metadata && match.metadata.text ? match.metadata.text.trim() : "")
+                        .filter(Boolean);
+                    if (contextChunks.length > 0) {
+                        hasPropertyContextForLLM = true;
+                    }
+                }
+            } catch (error) {
+                console.error(`WhatsApp API: Error during RAG:`, error.message);
             }
         }
         
-        if (contexts.length === 0) {
-            await sendWhatsAppMessage(fromNumber, "I couldn't find specific information about that. Could you please rephrase your question?");
-            return;
-        }
+        const contextForLLM = hasPropertyContextForLLM ? contextChunks.join("\n\n---\n\n") : "No specific property information was retrieved for this query.";
+        const readablePropertyName = getReadablePropertyName(propertyId);
         
-        const context = contexts.join('\n\n');
-        
-        // Prepare LLM prompt
-        const systemPrompt = `You are Lucy, a helpful AI assistant for property inquiries. 
-        You're responding in a WhatsApp group chat where you were mentioned.
-        Be friendly, concise, and helpful. Keep responses under 300 words.
-        Only answer based on the provided context. If information isn't in the context, say so politely.`;
-        
-        const userPrompt = `Context about the property:\n${context}\n\nQuestion: ${userQuery}`;
-        
+        // Use similar system prompt but adapted for WhatsApp
+        const systemPrompt = `You are Lucy, a remarkably charming, kind, and warm AI assistant. You have years of experience living in and exploring Bali, making you a true local expert. You are currently assisting a guest at property "${readablePropertyName}". Your goal is to be exceptionally helpful and make their stay wonderful.
+
+The guest's current question is: "${userQuery}"
+
+Your primary task is to determine the NATURE of the guest's question and respond accordingly:
+
+TYPE 1: PROPERTY-SPECIFIC QUESTION
+- This is a question directly about property "${readablePropertyName}".
+- IF the question is Type 1:
+   1. You HAVE BEEN PROVIDED with the following "Property Information Context" for "${readablePropertyName}":
+   ---
+   ${contextForLLM}
+   ---
+   2. Answer USING ONLY information found within this "Property Information Context".
+   3. If the context DOES NOT contain the answer, state: "I'm sorry, I'm unsure about that. You might need to ask one of my human teammates for more help here."
+
+TYPE 2: GENERAL BALI/LOCATION QUESTION
+- This is a question about Bali or specific areas within Bali.
+- Answer using your general knowledge as a helpful Bali expert.
+
+TYPE 3: OTHER GENERAL KNOWLEDGE QUESTION
+- Answer using your general knowledge.
+
+CRITICAL:
+- Keep responses concise for WhatsApp (under 300 words).
+- Use emoji sparingly but warmly 😊
+- Break long responses into paragraphs for readability.
+- PROVIDE ONLY THE FINAL ANSWER, not your reasoning process.`;
+
         // Get LLM response
         const completion = await openrouterLlmClient.chat.completions.create({
-            model: OPENROUTER_MODEL_NAME || "meta-llama/llama-3-8b-instruct",
+            model: llmModelToUse,
             messages: [
                 { role: "system", content: systemPrompt },
-                { role: "user", content: userPrompt }
+                { role: "user", content: userQuery }
             ],
-            max_tokens: 500,
-            temperature: 0.7
+            temperature: 0.3,
+            max_tokens: 400,
         });
         
-        let response = completion.choices[0]?.message?.content || "I couldn't generate a response. Please try again.";
+        const response = completion.choices[0]?.message?.content || "I'm sorry, I couldn't process that. Please try again.";
         
-        // Clean and send response
-        await sendWhatsAppMessage(fromNumber, cleanLLMResponse(response));
+        // Send response
+        await sendWhatsAppMessage(fromNumber, response);
         
     } catch (error) {
-        console.error("Meta WhatsApp: Error processing query:", error);
-        await sendWhatsAppMessage(fromNumber, "Sorry, I encountered an error processing your question. Please try again later.");
+        console.error("WhatsApp API: Error processing query:", error);
+        await sendWhatsAppMessage(fromNumber, "Sorry, I encountered an error. Please try again later. 🙏");
     }
 }
 
 // Main webhook handler
 export default async function handler(req, res) {
-    console.log("\n--- Meta WhatsApp API Request ---");
+    console.log("\n--- WhatsApp Webhook Request ---");
     console.log("Method:", req.method);
-    console.log("Headers:", req.headers);
     
-    // Handle webhook verification (GET request)
+    // Handle webhook verification
     if (req.method === 'GET') {
         const mode = req.query['hub.mode'];
         const token = req.query['hub.verify_token'];
         const challenge = req.query['hub.challenge'];
         
-        console.log('Webhook verification attempt:', { mode, token, challenge });
-        
         if (mode && token) {
             if (mode === 'subscribe' && token === META_VERIFY_TOKEN) {
-                console.log('Meta WhatsApp: Webhook verified successfully');
+                console.log('WhatsApp: Webhook verified successfully');
                 return res.status(200).send(challenge);
             } else {
-                console.log('Meta WhatsApp: Webhook verification failed - token mismatch');
                 return res.status(403).send('Forbidden');
             }
         }
         return res.status(400).send('Bad Request');
     }
     
-    // Handle incoming messages (POST request)
+    // Handle incoming messages
     if (req.method === 'POST') {
         const body = req.body;
-        console.log('Incoming webhook body:', JSON.stringify(body, null, 2));
         
-        // Check if this is a WhatsApp message
         if (body.entry && body.entry.length > 0) {
             for (const entry of body.entry) {
                 const changes = entry.changes;
@@ -246,51 +259,36 @@ export default async function handler(req, res) {
                     for (const change of changes) {
                         const value = change.value;
                         
-                        // Check if we have messages
                         if (value.messages && value.messages.length > 0) {
                             const message = value.messages[0];
                             const fromNumber = message.from;
                             const messageText = message.text?.body || '';
+                            const messageType = message.type;
                             
-                            console.log(`Meta WhatsApp: Message from ${fromNumber}: "${messageText}"`);
+                            // Only process text messages
+                            if (messageType !== 'text') {
+                                continue;
+                            }
                             
-                            // Check if it's a group message
-                            const isGroupMessage = fromNumber.includes('@g.us') || 
-                                                 value.contacts?.[0]?.wa_id !== fromNumber;
+                            console.log(`WhatsApp: Message from ${fromNumber}: "${messageText}"`);
                             
-                            if (isGroupMessage) {
-                                console.log('Meta WhatsApp: Group message detected');
-                                
-                                // Check for trigger word
-                                if (!messageText.toLowerCase().includes(GROUP_CHAT_TRIGGER_WORD.toLowerCase())) {
-                                    console.log('Meta WhatsApp: Group message ignored (no trigger)');
-                                    return res.status(200).send('OK');
-                                }
-                                
+                            // Check if it's a group message by looking for trigger word
+                            const isGroupTrigger = messageText.toLowerCase().includes(GROUP_CHAT_TRIGGER_WORD.toLowerCase());
+                            
+                            if (isGroupTrigger) {
                                 // Extract query after trigger word
                                 const match = messageText.match(new RegExp(`${GROUP_CHAT_TRIGGER_WORD}\\s+(.+)`, 'i'));
                                 if (!match || !match[1]) {
-                                    await sendWhatsAppMessage(fromNumber, "You called? What can I help you with? 😊");
+                                    await sendWhatsAppMessage(fromNumber, "Hi! How can I help you today? 😊");
                                     return res.status(200).send('OK');
                                 }
                                 
                                 const userQuery = match[1].trim();
-                                console.log('Meta WhatsApp: Processing query:', userQuery);
-                                
-                                // Process the query
-                                await processQuery(fromNumber, userQuery, DEFAULT_PROPERTY_ID);
-                                
+                                await processQuery(fromNumber, userQuery);
                             } else {
-                                // 1:1 message - also process it
-                                console.log('Meta WhatsApp: 1:1 message');
-                                await processQuery(fromNumber, messageText, DEFAULT_PROPERTY_ID);
+                                // For 1:1 chats, process all messages
+                                await processQuery(fromNumber, messageText);
                             }
-                        }
-                        
-                        // Handle status updates
-                        if (value.statuses && value.statuses.length > 0) {
-                            const status = value.statuses[0];
-                            console.log('Meta WhatsApp: Status update:', status);
                         }
                     }
                 }
