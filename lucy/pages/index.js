@@ -1,5 +1,3 @@
-//pages/index.js
-
 import { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
 import ReactMarkdown from 'react-markdown';
@@ -9,10 +7,20 @@ export default function Home() {
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [propertyId, setPropertyId] = useState('Unit4BNelayanReefApartment'); // Default or from selection
+  const [propertyId, setPropertyId] = useState('Casa_Nalani'); // Default property
   const [isBotTyping, setIsBotTyping] = useState(false); // For typing indicator
 
   const messagesEndRef = useRef(null); // For auto-scrolling
+
+  // Property mapping for display names
+  const propertyOptions = [
+    { id: 'Casa_Nalani', name: 'Casa Nalani' },
+    { id: 'Unit_1B_Nelayan_Reef_Apartment', name: 'Unit 1B Nelayan Reef Apartment' },
+    { id: 'Unit_4B_Nelayan_Reef_Apartment', name: 'Unit 4B Nelayan Reef Apartment' },
+    { id: 'Villa_Breeze', name: 'Villa Breeze' },
+    { id: 'Villa_Loka', name: 'Villa Loka' },
+    { id: 'Villa_Timur', name: 'Villa Timur' },
+  ];
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -37,8 +45,6 @@ export default function Home() {
     if (!query.trim()) return;
 
     const userMessage = { sender: 'user', text: query };
-    // Note: 'messages' state used in fetch body below will be the state *before* this userMessage is added due to async nature of setState.
-    // This is generally correct if chatHistory should be turns *prior* to the current one.
     setMessages(prevMessages => [...prevMessages, userMessage]);
     
     const currentQuery = query; // Store query as it will be cleared
@@ -52,7 +58,7 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ query: currentQuery, propertyId, chatHistory: messages.slice(-6) }), // Send currentQuery, propertyId, and last 6 messages as history
+        body: JSON.stringify({ query: currentQuery, propertyId, chatHistory: messages.slice(-6) }),
       });
 
       setIsBotTyping(false); // Bot stops "typing"
@@ -96,10 +102,11 @@ export default function Home() {
               onChange={handlePropertyChange}
               className="p-1 rounded text-gray-800 text-sm bg-indigo-100 border-indigo-300 focus:ring-indigo-500 focus:border-indigo-500"
             >
-              <option value="Unit4BNelayanReefApartment">Unit4B Nelayan Reef (Bali)</option>
-              <option value="MyDubaiProperty">My Dubai Penthouse (Dubai)</option>
-              <option value="CityLoft101">CityLoft 101 (Generic)</option>
-              {/* Add more properties here */}
+              {propertyOptions.map(property => (
+                <option key={property.id} value={property.id}>
+                  {property.name}
+                </option>
+              ))}
             </select>
           </div>
         </header>
@@ -115,16 +122,15 @@ export default function Home() {
                 className={`max-w-xl lg:max-w-2xl px-4 py-2 rounded-2xl shadow-md ${
                   msg.sender === 'user'
                     ? 'bg-indigo-500 text-white rounded-br-none'
-                    : 'bg-gray-200 text-gray-800 rounded-bl-none prose prose-sm max-w-none' // MODIFIED: Added prose classes for bot
+                    : 'bg-gray-200 text-gray-800 rounded-bl-none prose prose-sm max-w-none'
                 }`}
               >
                 {msg.sender === 'bot' ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}> 
-                    {/* MODIFIED: Removed className from ReactMarkdown */}
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
                     {msg.text}
                   </ReactMarkdown>
                 ) : (
-                  msg.text // User messages usually don't have markdown applied from user input
+                  msg.text
                 )}
               </div>
             </div>

@@ -17,6 +17,19 @@ const {
     VERCEL_URL
 } = process.env;
 
+// --- Helper Functions ---
+function getReadablePropertyName(propertyId) {
+    const propertyMap = {
+        'Casa_Nalani': 'Casa Nalani',
+        'Unit_1B_Nelayan_Reef_Apartment_copy': 'Unit 1B Nelayan Reef Apartment',
+        'Unit_4B_Nelayan_Reef_Apartment': 'Unit 4B Nelayan Reef Apartment',
+        'Villa_Breeze': 'Villa Breeze',
+        'Villa_Loka': 'Villa Loka',
+        'Villa_Timur': 'Villa Timur',
+    };
+    return propertyMap[propertyId] || propertyId.replace(/_/g, ' ');
+}
+
 // --- Initialize Clients (remains the same) ---
 let pinecone;
 let pineconeIndex;
@@ -130,7 +143,63 @@ function createContextAwareQuery(userQuery, chatHistory) {
 
 // Helper function to clean LLM responses
 function cleanLLMResponse(response) {
-    // Remove any lines that look like instructions or reasoning
+    // First check if response contains obvious reasoning patterns
+    const reasoningIndicators = [
+        'does it answer',
+        'is it in lucy\'s persona',
+        'does it provide only the final answer',
+        'the plan is solid',
+        'i will now generate',
+        'is it concise but complete',
+        '*   ',
+        'yes.',
+        'no.',
+        '? yes',
+        '? no'
+    ];
+    
+    // Check if the response contains reasoning
+    const lowerResponse = response.toLowerCase();
+    const hasReasoning = reasoningIndicators.some(indicator => lowerResponse.includes(indicator));
+    
+    if (hasReasoning) {
+        // Try to extract just the actual response
+        // Look for common patterns where the actual response starts
+        const responseStarters = [
+            /(?:final response:|here's the response:|response:)\s*(.+)/is,
+            /(?:i will now generate the final response\.?)\s*(.+)/is,
+            /(?:the plan is solid\..*?)\s*(.+)/is,
+            /\n\n(?!.*\*|.*\?|.*yes\.|.*no\.)(.+)/s, // Look for content after double newline without bullets
+        ];
+        
+        for (const pattern of responseStarters) {
+            const match = response.match(pattern);
+            if (match && match[1]) {
+                response = match[1].trim();
+                break;
+            }
+        }
+        
+        // If we still have reasoning, try to find the last substantial paragraph
+        if (response.toLowerCase().includes('yes.') || response.includes('*')) {
+            const paragraphs = response.split(/\n\n+/);
+            // Find the last paragraph that doesn't look like reasoning
+            for (let i = paragraphs.length - 1; i >= 0; i--) {
+                const para = paragraphs[i].trim();
+                if (para && 
+                    !para.includes('*') && 
+                    !para.toLowerCase().includes('yes.') && 
+                    !para.toLowerCase().includes('no.') &&
+                    !para.includes('?') &&
+                    para.length > 20) {
+                    response = para;
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Original cleaning logic
     const lines = response.split('\n');
     const cleanedLines = lines.filter(line => {
         const lowerLine = line.toLowerCase().trim();
@@ -146,7 +215,9 @@ function cleanLLMResponse(response) {
                !lowerLine.includes('critical:') &&
                !lowerLine.includes('prioritize answering') &&
                !line.trim().match(/^[a-z]\.\s/) && // Remove "a. ", "b. ", etc.
-               !line.trim().match(/^\d+\.\s.*:$/); // Remove "1. Something:"
+               !line.trim().match(/^\d+\.\s.*:$/) && // Remove "1. Something:"
+               !line.trim().match(/^\*\s+/) && // Remove bullet points
+               !lowerLine.match(/\?\s*(yes|no)\.?$/i); // Remove "? Yes." patterns
     });
     
     let cleanedResponse = cleanedLines.join('\n').trim();
@@ -154,6 +225,12 @@ function cleanLLMResponse(response) {
     // If the response starts with a quote, remove it
     if (cleanedResponse.startsWith('"') && cleanedResponse.endsWith('"')) {
         cleanedResponse = cleanedResponse.slice(1, -1);
+    }
+    
+    // Final check - if response is too short or still contains reasoning, return a fallback
+    if (cleanedResponse.length < 10 || cleanedResponse.toLowerCase().includes('yes.')) {
+        console.warn("Chat API: Response still contained reasoning after cleaning. Original:", response.substring(0, 100));
+        return "I apologize, I had a brief hiccup. Could you please ask your question again?";
     }
     
     return cleanedResponse;
@@ -232,8 +309,11 @@ export default async function handler(req, res) {
     const cityFromProperty = "Bali";
     console.log(`Chat API: Property location: ${cityFromProperty}. Has RAG context to pass to LLM: ${hasPropertyContextForLLM}`);
 
+    // Get readable property name for the prompt
+    const readablePropertyName = getReadablePropertyName(propertyId);
+
     // Enhanced system prompt with conversation awareness
-    const systemPrompt = `You are Lucy, a remarkably charming, kind, and warm AI assistant. You have years of experience living in and exploring Bali, making you a true local expert. You are currently assisting a guest at property "${propertyId}". Your goal is to be exceptionally helpful and make their stay wonderful.
+    const systemPrompt = `You are Lucy, a remarkably charming, kind, and warm AI assistant. You have years of experience living in and exploring Bali, making you a true local expert. You are currently assisting a guest at property "${readablePropertyName}". Your goal is to be exceptionally helpful and make their stay wonderful.
 
 IMPORTANT CONVERSATION CONTEXT:
 - You are engaged in an ongoing conversation with the guest
@@ -247,15 +327,15 @@ The guest's current question is: "${userQuery}"
 Your primary task is to determine the NATURE of the guest's question and respond accordingly:
 
 TYPE 1: PROPERTY-SPECIFIC QUESTION
-- This is a question directly about property "${propertyId}" (e.g., "wifi password?", "how does the AC work?", "what's the address for ${propertyId}?").
+- This is a question directly about property "${readablePropertyName}" (e.g., "wifi password?", "how does the AC work?", "what's the address for ${readablePropertyName}?").
 - IF the question is Type 1:
-   1. You HAVE BEEN PROVIDED with the following "Property Information Context" for "${propertyId}":
+   1. You HAVE BEEN PROVIDED with the following "Property Information Context" for "${readablePropertyName}":
    ---
    ${contextForLLM}
    ---
    (Note: If the context above says "No specific property information was retrieved", it means RAG found nothing relevant from the database for this query for this property.)
    2. Answer the question ("${userQuery}") USING ONLY information found within this "Property Information Context".
-   3. If the "Property Information Context" (especially if it's not "No specific property information...") DOES NOT contain the answer for "${propertyId}", then state: "I'm sorry, I'm unsure about that. You might need to ask one of my human teammates in this group chat for more help here." DO NOT use your general knowledge for Type 1 questions if the context is missing the answer or says no info was retrieved.
+   3. If the "Property Information Context" (especially if it's not "No specific property information...") DOES NOT contain the answer for "${readablePropertyName}", then state: "I'm sorry, I'm unsure about that. You might need to ask one of my human teammates in this group chat for more help here." DO NOT use your general knowledge for Type 1 questions if the context is missing the answer or says no info was retrieved.
 
 TYPE 2: GENERAL BALI/LOCATION QUESTION
 - This is a question about Bali or specific areas within Bali mentioned in "${userQuery}" (e.g., "things to do in Seminyak", "best restaurants in Canggu", "how to get to the airport?").
@@ -276,9 +356,12 @@ CRITICAL:
 - Always maintain a friendly, polite, and warm conversational tone. Offer a little extra helpful tip or suggestion if appropriate, especially for general Bali questions.
 - Be concise but complete.
 - Build upon the conversation naturally - don't repeat information you've already provided unless specifically asked.
-- PROVIDE ONLY THE FINAL ANSWER, not your reasoning process.`;
+- PROVIDE ONLY THE FINAL ANSWER, not your reasoning process.
+- DO NOT include any meta-commentary about your response (no "I will now...", "The plan is...", etc.)
+- DO NOT include bullet points or evaluation criteria in your response.
+- RESPOND DIRECTLY as if you're having a natural conversation.`;
 
-    let llmResponseText = `I'm sorry, I encountered an issue processing your request for property "${propertyId}".`;
+    let llmResponseText = `I'm sorry, I encountered an issue processing your request for property "${readablePropertyName}".`;
 
     if (openrouterLlmClient) {
         try {
@@ -323,15 +406,15 @@ CRITICAL:
                 console.log(`Chat API: LLM response received: "${llmResponseText.substring(0,100)}..."`);
             } else {
                 console.error("Chat API: No valid response content from OpenRouter:", JSON.stringify(completion, null, 2));
-                llmResponseText = `I received an unusual response from my AI brain for '${propertyId}'.`;
+                llmResponseText = `I received an unusual response from my AI brain for '${readablePropertyName}'.`;
             }
         } catch (error) {
             console.error("Chat API: Error calling OpenRouter API:", error.response ? JSON.stringify(error.response.data, null, 2) : error.message, error.stack);
-            llmResponseText = `Sorry, I'm having trouble connecting to my AI brain right now for '${propertyId}'. Please try again.`;
+            llmResponseText = `Sorry, I'm having trouble connecting to my AI brain right now for '${readablePropertyName}'. Please try again.`;
         }
     } else {
          console.error("Chat API: OpenRouter client not initialized. Cannot create LLM completion.");
-         llmResponseText = `My connection to the AI brain is offline for '${propertyId}'. Please inform support.`;
+         llmResponseText = `My connection to the AI brain is offline for '${readablePropertyName}'. Please inform support.`;
     }
 
     return res.status(200).json({ response: llmResponseText });

@@ -115,6 +115,19 @@ def chunk_text(text, max_chunk_length_chars=2000, overlap=200):
     return list(dict.fromkeys(processed_chunks))
 
 
+def sanitize_property_id(filename):
+    """Convert filename to a valid property ID by removing .txt and replacing spaces/special chars"""
+    # Remove .txt extension
+    property_id = filename.replace('.txt', '')
+    # Replace spaces and special characters with underscores
+    property_id = re.sub(r'[^\w\-]', '_', property_id)
+    # Remove multiple consecutive underscores
+    property_id = re.sub(r'_+', '_', property_id)
+    # Remove leading/trailing underscores
+    property_id = property_id.strip('_')
+    return property_id
+
+
 def process_and_upload_data():
     # Critical configuration check
     if not all([PINECONE_API_KEY, PINECONE_ENVIRONMENT_CONFIG, GOOGLE_API_KEY, PINECONE_INDEX_NAME]):
@@ -208,24 +221,20 @@ def process_and_upload_data():
         return
 
     logging.info(f"Step 1: Reading and chunking files from {PROPERTY_DATA_FOLDER}...")
-    # Regex to match "Property_{YourName}.txt" and capture "YourName"
-    # To match ANY .txt file and use its name (minus .txt) as ID, change to r"(.+)\.txt"
-    # but be wary of special characters or spaces in filenames if doing so.
-    property_file_regex = r"Property_([a-zA-Z0-9_-]+)\.txt"
-
+    
+    # Process all .txt files in the directory
     for filename in os.listdir(PROPERTY_DATA_FOLDER):
-        if not filename.endswith(".txt"): continue # Skip non-txt files
-
-        match = re.match(property_file_regex, filename, re.IGNORECASE)
-        if not match:
-            logging.warning(f"Skipping file (pattern mismatch: expected '{property_file_regex}'): {filename}")
-            continue
-        property_id = match.group(1)
-
+        if not filename.endswith(".txt"): 
+            continue # Skip non-txt files
+        
+        # Generate property ID from filename
+        property_id = sanitize_property_id(filename)
+        
         filepath = os.path.join(PROPERTY_DATA_FOLDER, filename)
         logging.info(f"  Processing: {filename} (Property ID: '{property_id}')")
         try:
-            with open(filepath, 'r', encoding='utf-8') as f: content = f.read()
+            with open(filepath, 'r', encoding='utf-8') as f: 
+                content = f.read()
         except Exception as e:
             logging.error(f"Could not read {filepath}: {e}")
             continue
@@ -238,8 +247,10 @@ def process_and_upload_data():
 
         for i, chunk_content in enumerate(text_chunks):
             all_files_chunks_with_metadata.append({
-                "property_id": property_id, "original_file": filename,
-                "chunk_index": i, "text": chunk_content
+                "property_id": property_id, 
+                "original_file": filename,
+                "chunk_index": i, 
+                "text": chunk_content
             })
 
     if not all_files_chunks_with_metadata:
@@ -266,7 +277,8 @@ def process_and_upload_data():
                 vectors_to_upsert.append({
                     "id": vector_id, "values": vector_values,
                     "metadata": {
-                        "propertyId": meta_item['property_id'], "text": meta_item['text'],
+                        "propertyId": meta_item['property_id'], 
+                        "text": meta_item['text'],
                         "original_file": meta_item['original_file']
                     }
                 })
@@ -301,4 +313,3 @@ if __name__ == "__main__":
          logging.error("CRITICAL: PINECONE_ENVIRONMENT is not set in scripts/.env and is required. Exiting.")
     else:
         process_and_upload_data()
-
